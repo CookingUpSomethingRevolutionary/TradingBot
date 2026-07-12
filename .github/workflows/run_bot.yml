@@ -1,30 +1,45 @@
-name: Run Trading Bot
+name: Deploy Live Dashboard Website
 
 on:
+  workflow_dispatch: # Allows manual button click activation
   schedule:
-    # This triggers the bot automatically every Monday at 9:30 AM UTC
-    - cron: '30 9 * * 1'
-  workflow_dispatch: # Allows you to also trigger it manually with a button click
+    - cron: '0 16 * * 5' # Runs automatically every Friday afternoon at stock market close
+
+# Gives GitHub Actions authorization privileges to build a web deployment path
+permissions:
+  contents: read
+  pages: write
+  id-token: write
 
 jobs:
-  run-bot:
+  deploy-site:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - name: Checkout Code Repository
+        uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: Configure Python Infrastructure
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Install dependencies
-        run: |
-          pip install pandas numpy alpaca-trade-api
+      - name: Gather Package Libraries
+        run: pip install pandas numpy yfinance
 
-      - name: Execute Live Rebalance
-        env:
-          # Storing your API keys securely in GitHub Secrets
-          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
-          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
-        run: python bot.py
+      - name: Build Dashboard Page Structure
+        run: python demo_web.py
+
+      - name: Setup Web Deployment Artifacts
+        uses: actions/configure-pages@v4
+
+      - name: Pack Production Assets
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.' # Serves files out of the main root path folder
+
+      - name: Release Live Site to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
