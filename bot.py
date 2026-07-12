@@ -8,9 +8,9 @@ import os
 # ==========================================
 # 1. AUTHENTICATION & CONFIGURATION (SECURE)
 # ==========================================
-# Reads secrets injected into the environment by GitHub Actions
-API_KEY = os.getenv(ALPACA_API_KEY)
-SECRET_KEY = os.getenv(ALPACA_SECRET_KEY)
+# Reads secrets injected into the environment by GitHub Actions (FIXED STRINGS)
+API_KEY = os.getenv("ALPACA_API_KEY")
+SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 BASE_URL = "https://paper-api.alpaca.markets"  # Paper trading environment URL
 
 # Enforce a strict key validation guardrail
@@ -110,7 +110,7 @@ def run_live_rebalance():
     for symbol in list(open_positions.keys()):
         if symbol not in target_tickers:
             print(f"Liquidating out-of-bounds asset: {symbol}")
-            api.submit_order(
+            order = api.submit_order(
                 symbol=symbol,
                 qty=open_positions[symbol],
                 side='sell',
