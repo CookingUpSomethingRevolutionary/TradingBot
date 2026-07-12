@@ -1,0 +1,30 @@
+name: Run Trading Bot
+
+on:
+  schedule:
+    # This triggers the bot automatically every Monday at 9:30 AM UTC
+    - cron: '30 9 * * 1'
+  workflow_dispatch: # Allows you to also trigger it manually with a button click
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install pandas numpy alpaca-trade-api
+
+      - name: Execute Live Rebalance
+        env:
+          # Storing your API keys securely in GitHub Secrets
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.SECRET_KEY }}
+        run: python bot.py
