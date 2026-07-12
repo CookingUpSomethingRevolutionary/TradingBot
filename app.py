@@ -2,13 +2,14 @@ import streamlit as st
 import alpaca_trade_api as tradeapi
 import pandas as pd
 import plotly.graph_objects as go
+import numpy as np
 import os
 
 # ==========================================
-# 1. PAGE SETUP & DESIGN
+# PAGE SETUP & STYLING
 # ==========================================
 st.set_page_config(
-    page_title="Dynamic Momentum Strategy Room",
+    page_title="Dynamic Momentum Strategy Suite",
     page_icon="⚡",
     layout="wide"
 )
@@ -16,10 +17,8 @@ st.set_page_config(
 st.title("⚡ Global Macro Dynamic Momentum Suite")
 st.markdown("---")
 
-# Navigation Tabs splitting Live Data from Backtest Engine
-tab1, tab2 = st.tabs(["🔮 Live Production Environment", "⏳ Historical Backtest Engine (2005-2026)"])
+tab1, tab2 = st.tabs(["🔮 Live Production Environment", "⏳ Historical Backtest Engine"])
 
-# Define Shared Universe Map
 asset_universe = {
     "US_Stocks": "SPY",
     "Tech_Stocks": "QQQ",
@@ -32,27 +31,23 @@ asset_universe = {
 # TAB 1: LIVE PRODUCTION ENVIRONMENT
 # ==========================================
 with tab1:
-    # Safely look for secrets via Streamlit secret injection or local env
     API_KEY = st.secrets.get("ALPACA_API_KEY") or os.getenv("ALPACA_API_KEY")
     SECRET_KEY = st.secrets.get("ALPACA_SECRET_KEY") or os.getenv("ALPACA_SECRET_KEY")
     BASE_URL = "https://paper-api.alpaca.markets"
 
     if not API_KEY or not SECRET_KEY:
-        st.warning("🔒 **Running in Preview Mode:** Connect your Alpaca secrets to unlock live telemetry.")
-        # Default placeholder metrics for safe public preview when keys are omitted
+        st.warning("🔒 **Running in Preview Mode:** Connect your Alpaca secrets to unlock live account telemetry.")
         col1, col2, col3 = st.columns(3)
-        col1.metric("Total Value", "$100,000.00", "Preview")
-        col2.metric("System Operational Mode", "Standby")
-        col3.metric("API Gateway", "Locked")
+        col1.metric("Total Equity", "$100,000.00", "Preview")
+        col2.metric("System Mode", "Standby")
+        col3.metric("API Gateway", "Disengaged")
     else:
         try:
             api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL, api_version='v2')
             account = api.get_account()
             
-            # --- ROW 1: LIVE WALLET TRACKING ---
-            st.subheader("💼 Real-Time Portfolio Positions")
+            # Account summary metrics
             col1, col2, col3, col4 = st.columns(4)
-            
             total_equity = float(account.portfolio_value)
             cash = float(account.cash)
             buying_power = float(account.buying_power)
@@ -62,17 +57,15 @@ with tab1:
             col3.metric("Buying Multiplier Power", f"${buying_power:,.2f}")
             col4.metric("Engine Health", "Online", delta="Operational")
             
-            # --- ROW 2: LIVE STRATEGY TELEMETRY ---
             st.markdown("---")
             st.subheader("📊 Current Strategy State Indicators")
             
-            @st.cache_data(ttl=300) # Safety cache rule to defend your public API keys
+            @st.cache_data(ttl=300)
             def run_live_indicators():
                 momentum_scores = {}
                 spy_bars = api.get_bars("SPY", tradeapi.rest.TimeFrame.Day, limit=265).df
                 if spy_bars.empty: return None
                 
-                # Replicating bot.py mathematical properties
                 for name, ticker in asset_universe.items():
                     b = api.get_bars(ticker, tradeapi.rest.TimeFrame.Day, limit=265).df
                     if not b.empty and len(b) >= 252:
@@ -83,7 +76,6 @@ with tab1:
                 spy_close = spy_bars['close']
                 spy_ema50 = spy_close.ewm(span=50, adjust=False).mean()
                 
-                # Alpha Relative Strength Index (RSI) derivation
                 change = spy_close.diff()
                 gain = change.mask(change < 0, 0).ewm(com=13, adjust=False).mean()
                 loss = -change.mask(change > 0, 0).ewm(com=13, adjust=False).mean()
@@ -112,16 +104,14 @@ with tab1:
                 else:
                     m4.warning(f"⚠️ **Regime:**\n{regime_str}")
                 
-                # Charting Strategy Framework
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(x=spy_hist.index, y=spy_hist.values, name='SPY Spot Price', line=dict(color='#00CC96')))
-                fig.add_trace(go.Scatter(x=ema_hist.index, y=ema_hist.values, name='EMA Trend Filter', line=dict(color='#EF553B', dash='dash')))
-                fig.update_layout(template="plotly_dark", height=350, margin=dict(l=10, r=10, t=10, b=10))
+                fig.add_trace(go.Scatter(x=spy_hist.index, y=spy_hist.values, name='SPY Price', line=dict(color='#00CC96')))
+                fig.add_trace(go.Scatter(x=ema_hist.index, y=ema_hist.values, name='50 EMA', line=dict(color='#EF553B', dash='dash')))
+                fig.update_layout(template="plotly_dark", height=320, margin=dict(l=10, r=10, t=10, b=10))
                 st.plotly_chart(fig, use_container_width=True)
                 
                 st.info(f"🎯 **System Target Allocations:** {', '.join(target_list)}")
                 
-            # --- ROW 3: OPEN MARKET POSITIONS ---
             st.markdown("---")
             st.subheader("📦 Currently Deployed Positions")
             live_pos = api.list_positions()
@@ -138,45 +128,67 @@ with tab1:
                     })
                 st.dataframe(pd.DataFrame(p_records), hide_index=True, use_container_width=True)
             else:
-                st.info("No active open positions. Waiting for execution rebalance frame.")
+                st.info("No active open positions found. Waiting for next schedule rebalance loop execution.")
                 
         except Exception as e:
-            st.error(f"Engine connection handling error: {e}")
+            st.error(f"Engine connection processing error: {e}")
 
 # ==========================================
-# TAB 2: HISTORICAL BACKTEST ENGINE
+# TAB 2: HISTORICAL BACKTEST ENGINE (LIVE PARSING)
 # ==========================================
 with tab2:
-    st.subheader("⏳ Mathematical Performance History Validation")
-    st.markdown("This tab details the empirical performance matrix backing this execution module since inception.")
+    st.subheader("⏳ Mathematical Backtest Analytics (Parsed Verification)")
     
-    # Macro Strategic Hardcoded Benchmarks reflecting your core backtest files
-    b_col1, b_col2, b_col3 = st.columns(3)
-    b_col1.metric("Strategy Final Return Portfolio Value", "$47,440.09", "Outperforming Base Setup")
-    b_col2.metric("S&P 500 Benchmark Portfolio Value", "$24,534.12")
-    b_col3.metric("System Excess Alpha Yield", "+93.36%")
-    
-    st.markdown("---")
-    st.subheader("📈 Visual Comparison Curve")
-    
-    # Mock data generation replicating your real backtest timeline (2005 to 2026)
-    dates = pd.date_range(start="2005-01-01", end="2026-07-12", freq="ME")
-    np_rand = pd.Series(0.0006, index=dates).values 
-    
-    # Simulated geometric asset curves mimicking backtest outputs
-    strategy_curve = [10000]
-    spy_curve = [10000]
-    for i in range(1, len(dates)):
-        strategy_curve.append(strategy_curve[-1] * (1 + 0.0075 + (0.012 if i % 24 < 14 else -0.004)))
-        spy_curve.append(spy_curve[-1] * (1 + 0.0061))
+    csv_file = "backtest_results.csv"
+    if not os.path.exists(csv_file):
+        st.info("ℹ️ **Backtest Data File Missing:** Please run `python backtest.py` locally in your workspace terminal first to compile the underlying validation CSV matrix.")
+    else:
+        # Read the exact mathematical numbers generated by your script
+        backtest_df = pd.read_csv(csv_file, parse_dates=["Date"], index_col="Date")
         
-    hist_df = pd.DataFrame({
-        "Dynamic Momentum Portfolio": strategy_curve,
-        "S&P 500 (Buy & Hold Benchmark)": spy_curve
-    }, index=dates)
-    
-    fig_hist = go.Figure()
-    fig_hist.add_trace(go.Scatter(x=hist_df.index, y=hist_df['Dynamic Momentum Portfolio'], name="Momentum Strategy Profile", line=dict(color="#FFB900", width=3)))
-    fig_hist.add_trace(go.Scatter(x=hist_df.index, y=hist_df['S&P 500 (Buy & Hold Benchmark)'], name="S&P 500 Index", line=dict(color="#888888", width=2)))
-    fig_hist.update_layout(template="plotly_dark", height=450, xaxis_title="Timeline Execution Year", yaxis_title="Total Multi-Asset Capital Valuation ($)")
-    st.plotly_chart(fig_hist, use_container_width=True)
+        strat_final = backtest_df["Strategy_Equity"].iloc[-1]
+        bench_final = backtest_df["Benchmark_Equity"].iloc[-1]
+        
+        strat_return = ((strat_final - 10000) / 10000) * 100
+        bench_return = ((bench_final - 10000) / 10000) * 100
+        alpha_excess = strat_return - bench_return
+        
+        # Performance Indicators Rows
+        b_col1, b_col2, b_col3 = st.columns(3)
+        b_col1.metric("Strategy Portfolio Value", f"${strat_final:,.2f}", f"{strat_return:+.2f}% Total Return")
+        b_col2.metric("S&P 500 Benchmark Value", f"${bench_final:,.2f}", f"{bench_return:+.2f}% Total Return")
+        b_col3.metric("System Alpha Multiplier", f"{alpha_excess:+.2f}%", "Excess Market Capture", delta_color="normal")
+        
+        # Interactive Performance Chart
+        st.markdown("### 📈 Strategic Growth Allocation Profiles")
+        fig_hist = go.Figure()
+        fig_hist.add_trace(go.Scatter(x=backtest_df.index, y=backtest_df['Strategy_Equity'], name="Dynamic Momentum Strategy Portfolio", line=dict(color="#FFB900", width=3)))
+        fig_hist.add_trace(go.Scatter(x=backtest_df.index, y=backtest_df['Benchmark_Equity'], name="S&P 500 Buy & Hold Benchmark (SPY)", line=dict(color="#888888", width=1.5, dash='dash')))
+        
+        fig_hist.update_layout(
+            template="plotly_dark", 
+            height=450, 
+            xaxis_title="Timeline Execution Date", 
+            yaxis_title="Asset Allocation Growth Value ($)",
+            margin=dict(l=20, r=20, t=20, b=20),
+            legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
+        )
+        st.plotly_chart(fig_hist, use_container_width=True)
+        
+        # Added bonus: Generate explicit statistical performance rows
+        st.markdown("### 📋 Mathematical Integrity Performance Table")
+        
+        # Calculate trailing metrics
+        strat_pcts = backtest_df["Strategy_Equity"].pct_change().dropna()
+        bench_pcts = backtest_df["Benchmark_Equity"].pct_change().dropna()
+        
+        # Annualized Sharpe Matrix calculation (Assuming Risk-Free Rate = 0 for pure baseline mapping)
+        strat_sharpe = (strat_pcts.mean() / strat_pcts.std()) * np.sqrt(252) if strat_pcts.std() != 0 else 0
+        bench_sharpe = (bench_pcts.mean() / bench_pcts.std()) * np.sqrt(252) if bench_pcts.std() != 0 else 0
+        
+        stats_data = {
+            "Performance Tracking Indicator": ["Starting Principle Capital", "Terminal Matrix Portfolio Valuation", "Compounded Cumulative Return %", "Estimated Annualized Sharpe Index Strategy Target"],
+            "Dynamic Momentum Strategy Portfolio": [f"$10,000.00", f"${strat_final:,.2f}", f"{strat_return:+.2f}%", f"{strat_sharpe:.2f}"],
+            "S&P 500 Buy & Hold Benchmark (SPY)": [f"$10,000.00", f"${bench_final:,.2f}", f"{bench_return:+.2f}%", f"{bench_sharpe:.2f}"]
+        }
+        st.dataframe(pd.DataFrame(stats_data), hide_index=True, use_container_width=True)
