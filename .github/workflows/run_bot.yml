@@ -1,45 +1,33 @@
-name: Deploy Live Dashboard Website
+name: Run Trading Bot Rebalance
 
 on:
-  workflow_dispatch: # Allows manual button click activation
   schedule:
-    - cron: '0 16 * * 5' # Runs automatically every Friday afternoon at stock market close
-
-# Gives GitHub Actions authorization privileges to build a web deployment path
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+    # Runs every Monday at 14:30 UTC (9:30 AM EST)
+    - cron: '30 14 * * 1'
+  workflow_dispatch: # Allows you to manually click a button in GitHub to run the bot whenever you want
 
 jobs:
-  deploy-site:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  run-bot:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Code Repository
-        uses: actions/checkout@v4
+    - name: Checkout repository code
+      uses: actions/checkout@v4
 
-      - name: Configure Python Infrastructure
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
+    - name: Set up Python Engine
+      uses: actions/setup-python@v5
+      with:
+        python-python: '3.10'
+        cache: 'pip' # Optional optimization: caches pip dependencies
 
-      - name: Gather Package Libraries
-        run: pip install pandas numpy yfinance
+    - name: Install System Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install alpaca-trade-api pandas numpy
 
-      - name: Build Dashboard Page Structure
-        run: python demo_web.py
-
-      - name: Setup Web Deployment Artifacts
-        uses: actions/configure-pages@v4
-
-      - name: Pack Production Assets
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: '.' # Serves files out of the main root path folder
-
-      - name: Release Live Site to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+    - name: Execute Rebalance Script
+      env:
+        # Securely injects secrets from your GitHub Repository settings into the environment
+        ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+        ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+      run: python bot.py
