@@ -62,33 +62,73 @@ with tab1:
             
             @st.cache_data(ttl=300)
             def run_live_indicators():
-                momentum_scores = {}
-                spy_bars = api.get_bars("SPY", tradeapi.rest.TimeFrame.Day, limit=265).df
-                if spy_bars.empty: return None
-                
-                for name, ticker in asset_universe.items():
-                    b = api.get_bars(ticker, tradeapi.rest.TimeFrame.Day, limit=265).df
-                    if not b.empty and len(b) >= 252:
-                        start_val = float(b['close'].iloc[-252])
-                        end_val = float(b['close'].iloc[-1])
-                        momentum_scores[ticker] = (end_val - start_val) / start_val
-                
-                spy_close = spy_bars['close']
-                spy_ema50 = spy_close.ewm(span=50, adjust=False).mean()
-                
-                change = spy_close.diff()
-                gain = change.mask(change < 0, 0).ewm(com=13, adjust=False).mean()
-                loss = -change.mask(change > 0, 0).ewm(com=13, adjust=False).mean()
-                spy_rsi = 100 - (100 / (1 + (gain / loss)))
-                
-                ranked = sorted(momentum_scores, key=momentum_scores.get, reverse=True)
-                curr_p, curr_e, curr_r = float(spy_close.iloc[-1]), float(spy_ema50.iloc[-1]), float(spy_rsi.iloc[-1])
-                
-                healthy = curr_p > curr_e and curr_r < 70
-                regime = "Bull Market Run (Equities Active)" if healthy else "Defensive Mode Triggered (Safe Assets)"
-                targets = ranked[:2] if healthy else [a for a in ranked if a in ['GLD', 'TLT', 'VNQ']][:2]
-                
-                return momentum_scores, curr_p, curr_e, curr_r, regime, targets, spy_close, spy_ema50
+                try:
+                    momentum_scores = {}
+                    
+                    # 1. Test fetching SPY baseline first
+                    spy_bars = api.get_bars("SPY", tradeapi.rest.TimeFrame.Day, limit=265).df
+                    if spy_bars.empty: 
+                        st.error("❌ Alpaca returned an empty dataset for SPY.")
+                        return None
+                    
+                    # Clean multi-index columns if they exist
+                    if isinstance(spy_bars.columns, pd.MultiIndex):
+                        spy_bars.columns = spy_bars.columns.droplevel(1)
+                    
+                    # 2. Fetch trailing universe momentum
+                    for name, ticker in asset_universe.items():
+                        try:
+                            b = api.get_bars(ticker, tradeapi.rest.TimeFrame.Day, limit=265).df
+                            if b.empty:
+                                st.warning(f"⚠️ Empty data received for {ticker}")
+                                continue
+                            if isinstance(b.columns, pd.MultiIndex):
+                                b.columns = b.columns.droplevel(1)
+                                
+                            if len(b) >= 252:
+                                start_val = float(b['close'].iloc[-252])
+                                end_val = float(b['close'].iloc[-1])
+                                momentum_scores[ticker] = (end_val - start_val) / start_val
+                            else:
+                                st.warning(f"⚠️ Not enough history for {ticker} (Got {len(b)} days, need 252)")
+                        except Exception as asset_err:
+                            st.error(f"❌ Failed processing asset {ticker}: {asset_err}")
+                    
+                    if not momentum_scores:
+                        st.error("❌ Momentum scores matrix is entirely empty.")
+                        return None
+
+                    # 3. Macro Trend Filters
+                    spy_close = spy_bars['close']
+                    spy_ema50 = spy_close.ewm(span=50, adjust=False).mean()
+                    
+                    change = spy_close.diff()
+                    gain = change.mask(change < 0, 0).ewm(com=13, adjust=False).mean()
+                    loss = -change.mask(change > 0, 0).ewm(com=13, adjust=False).mean()
+                    
+                    # Prevent zero division errors
+                    loss = loss.replace(0, 0.00001)
+                    spy_rsi = 100 - (100 / (1 + (gain / loss)))
+                    
+                    ranked = sorted(momentum_scores, key=momentum_scores.get, reverse=True)
+                    curr_p, curr_e, curr_r = float(spy_close.iloc[-1]), float(spy_ema50.iloc[-1]), float(spy_rsi.iloc[-1])
+                    
+                    healthy = curr_p > curr_e and curr_r < 70
+                    regime = "Bull Market Run (Equities Active)" if healthy else "Defensive Mode Triggered (Safe Assets)"
+                    targets = ranked[:2] if healthy else [a for a in ranked if a in ['GLD', 'TLT', 'VNQ']][:2]
+                    
+                    # Fallback if defensive selection yields nothing
+                    if not targets:
+                        targets = ranked[:2]
+                        
+                    return momentum_scores, curr_p, curr_e, curr_r, regime, targets, spy_close, spy_ema50
+                    
+                except Exception as e:
+                    # This will print the exact line error out on your web browser screen
+                    st.error(f"💥 Internal Indicator Engine Crash: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
+                    return None
 
             engine_out = run_live_indicators()
             if engine_out:
