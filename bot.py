@@ -11,7 +11,7 @@ import os
 # Reads secrets injected into the environment by GitHub Actions (FIXED STRINGS)
 API_KEY = os.getenv("ALPACA_API_KEY")
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
-BASE_URL = "https://paper-api.alpaca.markets"  # Paper trading environment URL
+BASE_URL = "https://paper-api.alpaca.markets/v2"  # Paper trading environment URL
 
 # Enforce a strict key validation guardrail
 if not API_KEY or not SECRET_KEY:
