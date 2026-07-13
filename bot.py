@@ -17,7 +17,7 @@ if API_KEY:
 if SECRET_KEY:
     print(f"DIAGNOSTIC: SECRET_KEY starts with '{SECRET_KEY[:4]}' and is {len(SECRET_KEY)} characters long.")
 # -----------------------------
-BASE_URL = "https://paper-api.alpaca.markets/v2"  # Paper trading environment gateway URL
+BASE_URL = "https://paper-api.alpaca.markets"  # Paper trading environment gateway URL
 
 # Enforce a strict validation check on credentials before starting execution
 if not API_KEY or not SECRET_KEY:
