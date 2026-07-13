@@ -8,9 +8,15 @@ import os
 # ==========================================
 # 1. AUTHENTICATION & CONFIGURATION (SECURE)
 # ==========================================
-# Reads secrets securely injected into the runtime environment
 API_KEY = os.getenv("ALPACA_API_KEY")
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
+
+# --- TEMP DIAGNOSTIC LOGS ---
+if API_KEY:
+    print(f"DIAGNOSTIC: API_KEY starts with '{API_KEY[:4]}' and is {len(API_KEY)} characters long.")
+if SECRET_KEY:
+    print(f"DIAGNOSTIC: SECRET_KEY starts with '{SECRET_KEY[:4]}' and is {len(SECRET_KEY)} characters long.")
+# -----------------------------
 BASE_URL = "https://paper-api.alpaca.markets/v2"  # Paper trading environment gateway URL
 
 # Enforce a strict validation check on credentials before starting execution
