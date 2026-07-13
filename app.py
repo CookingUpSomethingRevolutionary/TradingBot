@@ -9,12 +9,12 @@ import os
 # PAGE SETUP & STYLING
 # ==========================================
 st.set_page_config(
-    page_title="Dynamic Momentum Strategy Suite",
+    page_title="Henry's Trading Bot",
     page_icon="⚡",
     layout="wide"
 )
 
-st.title("⚡ Global Macro Dynamic Momentum Suite")
+st.title("⚡ Henry's Trading Bot")
 st.markdown("---")
 
 tab1, tab2 = st.tabs(["🔮 Live Production Environment", "⏳ Historical Backtest Engine"])
