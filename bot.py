@@ -11,7 +11,7 @@ import os
 # Reads secrets securely injected into the runtime environment
 API_KEY = os.getenv("ALPACA_API_KEY")
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
-BASE_URL = "https://paper-api.alpaca.markets"  # Paper trading environment gateway URL
+BASE_URL = "https://paper-api.alpaca.markets/v2"  # Paper trading environment gateway URL
 
 # Enforce a strict validation check on credentials before starting execution
 if not API_KEY or not SECRET_KEY:
