@@ -65,20 +65,23 @@ with tab1:
                 try:
                     momentum_scores = {}
                     
-                    # 1. Test fetching SPY baseline first
-                    spy_bars = api.get_bars("SPY", tradeapi.rest.TimeFrame.Day, limit=265).df
+                    # Create a definitive 15-month calendar lookback window 
+                    # to safely fetch enough historical data points
+                    start_date = (pd.Timestamp.now() - pd.DateOffset(months=15)).strftime('%Y-%m-%d')
+                    
+                    # 1. Fetch SPY with the explicit 'iex' feed restriction applied
+                    spy_bars = api.get_bars("SPY", tradeapi.rest.TimeFrame.Day, start=start_date, feed='iex').df
                     if spy_bars.empty: 
-                        st.error("❌ Alpaca returned an empty dataset for SPY.")
+                        st.error("❌ Alpaca returned an empty dataset for SPY. Ensure your keys are correct and active.")
                         return None
                     
-                    # Clean multi-index columns if they exist
                     if isinstance(spy_bars.columns, pd.MultiIndex):
                         spy_bars.columns = spy_bars.columns.droplevel(1)
                     
-                    # 2. Fetch trailing universe momentum
+                    # 2. Loop and fetch trailing universe momentum with the 'iex' feed
                     for name, ticker in asset_universe.items():
                         try:
-                            b = api.get_bars(ticker, tradeapi.rest.TimeFrame.Day, limit=265).df
+                            b = api.get_bars(ticker, tradeapi.rest.TimeFrame.Day, start=start_date, feed='iex').df
                             if b.empty:
                                 st.warning(f"⚠️ Empty data received for {ticker}")
                                 continue
@@ -98,7 +101,7 @@ with tab1:
                         st.error("❌ Momentum scores matrix is entirely empty.")
                         return None
 
-                    # 3. Macro Trend Filters
+                    # 3. Calculate Macro Trend Filters
                     spy_close = spy_bars['close']
                     spy_ema50 = spy_close.ewm(span=50, adjust=False).mean()
                     
@@ -106,8 +109,7 @@ with tab1:
                     gain = change.mask(change < 0, 0).ewm(com=13, adjust=False).mean()
                     loss = -change.mask(change > 0, 0).ewm(com=13, adjust=False).mean()
                     
-                    # Prevent zero division errors
-                    loss = loss.replace(0, 0.00001)
+                    loss = loss.replace(0, 0.00001) # Prevent divide-by-zero crashes
                     spy_rsi = 100 - (100 / (1 + (gain / loss)))
                     
                     ranked = sorted(momentum_scores, key=momentum_scores.get, reverse=True)
@@ -117,19 +119,17 @@ with tab1:
                     regime = "Bull Market Run (Equities Active)" if healthy else "Defensive Mode Triggered (Safe Assets)"
                     targets = ranked[:2] if healthy else [a for a in ranked if a in ['GLD', 'TLT', 'VNQ']][:2]
                     
-                    # Fallback if defensive selection yields nothing
                     if not targets:
                         targets = ranked[:2]
                         
                     return momentum_scores, curr_p, curr_e, curr_r, regime, targets, spy_close, spy_ema50
                     
                 except Exception as e:
-                    # This will print the exact line error out on your web browser screen
                     st.error(f"💥 Internal Indicator Engine Crash: {str(e)}")
                     import traceback
                     st.code(traceback.format_exc())
                     return None
-
+                  
             engine_out = run_live_indicators()
             if engine_out:
                 scores, spy_p, spy_e, spy_r, regime_str, target_list, spy_hist, ema_hist = engine_out
