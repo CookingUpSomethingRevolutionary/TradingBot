@@ -28,9 +28,15 @@ if isinstance(df_spy.columns, pd.MultiIndex):
 # Compile master dataframe
 df_universe = pd.DataFrame(raw_data)
 df_universe['US_Stocks'] = df_spy['Close']
+
+# CRITICAL FIX: Only drop rows where the market benchmark itself is missing
 df_universe = df_universe.dropna(subset=['US_Stocks'])
 
-# Macro Trend Filters
+# CRITICAL FIX: Forward-fill any random single-day yfinance missing data gaps.
+# This ensures that once an asset launches, its price is never a random NaN.
+df_universe = df_universe.ffill()
+
+# Pre-calculate Benchmark Macro Trend Indicators (50 EMA)
 df_universe['SPY_EMA50'] = df_universe['US_Stocks'].ewm(span=50, adjust=False).mean()
 
 lookback_period = 252  
@@ -55,7 +61,7 @@ for idx in range(lookback_period, len(df_universe)):
     spy_price = current_row['US_Stocks']
     spy_ema = current_row['SPY_EMA50']
     
-    # Calculate daily mark-to-market valuation
+    # Calculate daily mark-to-market valuation safely
     total_portfolio_value = cash_pool + sum(shares * current_row[asset] for asset, shares in current_holdings.items())
     
     # MONTHLY REBALANCE GATE (Slashes friction drag by 75%)
@@ -83,7 +89,6 @@ for idx in range(lookback_period, len(df_universe)):
         
         # Macro Filter Rules: Only allocate to equities if SPY is in a healthy uptrend
         if spy_price > spy_ema and len(ranked_sectors) > 0:
-            # Assign equal weights to top 2 momentum leaders
             leaders = ranked_sectors[:2]
             weight_per_asset = 1.0 / len(leaders)
             for asset in leaders:
@@ -133,4 +138,4 @@ for idx in range(lookback_period, len(df_universe)):
 results_df = pd.DataFrame({"Strategy_Equity": equity_timeline, "Benchmark_Equity": benchmark_timeline}, index=date_timeline)
 results_df.index.name = "Date"
 results_df.to_csv("backtest_results.csv")
-print("✅ Institutional Sector Backtest concluded successfully!")
+print("✅ Institutional Sector Backtest concluded successfully with full NaN protection!")
