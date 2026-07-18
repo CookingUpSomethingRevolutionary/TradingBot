@@ -6,7 +6,7 @@ import os
 
 # Modern alpaca-py structural imports
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
+from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
@@ -23,7 +23,6 @@ if not API_KEY or not SECRET_KEY:
     sys.exit(1)
 
 try:
-    # Official clients inherit environments automatically via paper=True/False
     trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
     data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
     account = trading_client.get_account()
@@ -50,22 +49,18 @@ def calculate_dynamic_targets():
     start_date = pd.Timestamp.now() - pd.DateOffset(months=15)
     
     for name, ticker in asset_universe.items():
-        # Modern historical data query structure
         request_params = StockBarsRequest(
             symbol_or_symbols=ticker,
             timeframe=TimeFrame.Day,
             start=start_date
         )
         
-        # Note: alpaca-py handles the 'iex' free tier constraint naturally behind the scenes 
-        # or defaults data retrieval cleanly based on account type
         bars_df = data_client.get_stock_bars(request_params).df
         
         if bars_df.empty:
             print(f"CRITICAL: No data returned for asset ticker: {ticker}")
             sys.exit(1)
             
-        # Clean multi-index indexing inherent to alpaca-py outputs
         df_ticker = bars_df.loc[ticker] if ticker in bars_df.index.levels[0] else bars_df
         
         if len(df_ticker) < 252:
@@ -77,7 +72,9 @@ def calculate_dynamic_targets():
             
         start_price = float(df_ticker['close'].iloc[-252])
         end_price = float(df_ticker['close'].iloc[-1])
-        momentum_scores[ticker] = (end_price - start_price) / start_price
+        
+        # FIX: Track scores directly by their string names ("Gold", "US_Stocks") to match structural logic
+        momentum_scores[name] = (end_price - start_price) / start_price
     
     ranked_assets = sorted(momentum_scores, key=momentum_scores.get, reverse=True)
     
@@ -101,6 +98,7 @@ def calculate_dynamic_targets():
         return [asset_universe[name] for name in ranked_assets[:2]]
     else:
         print("Regime Status: Volatile Risk-Off Warning. Executing safety allocation rules.")
+        # FIX: "Gold", "Bonds", and "Real_Estate" match the ranked_assets tracking strings perfectly now
         safe_pool = [a for a in ranked_assets if a in ['Gold', 'Bonds', 'Real_Estate']]
         selected = safe_pool[:2] if len(safe_pool) >= 2 else ranked_assets[:2]
         return [asset_universe[name] for name in selected]
@@ -113,16 +111,13 @@ def run_live_rebalance():
     target_tickers = calculate_dynamic_targets()
     print(f"Identified Action Target Assets: {target_tickers}")
     
-    # Modern endpoint syntax to pull active configurations
     positions = trading_client.get_all_positions()
     open_positions = {p.symbol: int(p.qty) for p in positions}
     
-    # Phase A: Liquidate positions no longer aligned
     for symbol in list(open_positions.keys()):
         if symbol not in target_tickers:
             print(f"Liquidating out-of-bounds asset: {symbol}")
             
-            # Modern structured order creation properties
             market_order_data = MarketOrderRequest(
                 symbol=symbol,
                 qty=open_positions[symbol],
@@ -147,7 +142,6 @@ def run_live_rebalance():
             print(f"Asset {ticker} is already established. Skipping.")
             continue
             
-        # Modern alternative for pulling clean snapshot real-time values
         request_params = StockBarsRequest(symbol_or_symbols=ticker, timeframe=TimeFrame.Day, limit=1)
         latest_bars = data_client.get_stock_bars(request_params).df
         asset_price = float(latest_bars['close'].iloc[-1])
