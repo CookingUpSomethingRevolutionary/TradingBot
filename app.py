@@ -5,21 +5,12 @@ import numpy as np
 import os
 
 from alpaca.trading.client import TradingClient
-from alpaca.data.historical import StockHistoricalDataClient
 
 st.set_page_config(page_title="Henry's Trading Bot", page_icon="⚡", layout="wide")
-st.title("⚡ Henry's Dual Momentum Stock Rotation System")
+st.title("⚡ Henry's Dynamic S&P 500 Momentum Rotation System")
 st.markdown("---")
 
 tab1, tab2 = st.tabs(["🔮 Live Production Environment", "⏳ Historical Backtest Engine"])
-
-# Top 30 Mega-Cap universe for high liquidity and momentum trends
-asset_universe = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "TSLA", "AVGO", 
-    "COST", "PEP", "CSCO", "ADBE", "TXN", "NFLX", "AMD", "QCOM", 
-    "INTC", "AMAT", "ISRG", "HON", "AMGN", "SBUX", "GILD", "BKNG", 
-    "MDLZ", "ADI", "LRCX", "VRTX", "PANW", "SNPS"
-]
 
 with tab1:
     API_KEY = st.secrets.get("ALPACA_API_KEY") or os.getenv("ALPACA_API_KEY")
@@ -49,7 +40,7 @@ with tab1:
             st.error(f"Engine connection processing error: {e}")
 
 with tab2:
-    st.subheader("⏳ Mathematical Backtest Analytics")
+    st.subheader("⏳ Mathematical Backtest Analytics (Bias-Free)")
     csv_file = "backtest_results.csv"
     
     if not os.path.exists(csv_file):
@@ -71,7 +62,7 @@ with tab2:
         
         st.markdown("### 📈 Strategic Growth Allocation Profiles")
         fig_hist = go.Figure()
-        fig_hist.add_trace(go.Scatter(x=backtest_df.index, y=backtest_df['Strategy_Equity'], name="Top-5 Momentum Stock Strategy", line=dict(color="#FFB900", width=3)))
+        fig_hist.add_trace(go.Scatter(x=backtest_df.index, y=backtest_df['Strategy_Equity'], name="Dynamic S&P 500 Top-5 Strategy", line=dict(color="#FFB900", width=3)))
         fig_hist.add_trace(go.Scatter(x=backtest_df.index, y=backtest_df['Benchmark_Equity'], name="S&P 500 Buy & Hold Benchmark (SPY)", line=dict(color="#888888", width=1.5, dash='dash')))
         fig_hist.update_layout(template="plotly_dark", height=450, margin=dict(l=20, r=20, t=20, b=20))
         st.plotly_chart(fig_hist, use_container_width=True)
@@ -85,7 +76,7 @@ with tab2:
         
         stats_data = {
             "Performance Tracking Indicator": ["Starting Principal Capital", "Terminal Portfolio Valuation", "Compounded Cumulative Return %", "Estimated Annualized Sharpe Index"],
-            "Dual Momentum Strategy": [f"$10,000.00", f"${strat_final:,.2f}", f"{strat_return:+.2f}%", f"{strat_sharpe:.2f}"],
+            "Dynamic S&P 500 Strategy": [f"$10,000.00", f"${strat_final:,.2f}", f"{strat_return:+.2f}%", f"{strat_sharpe:.2f}"],
             "S&P 500 Buy & Hold (SPY)": [f"$10,000.00", f"${bench_final:,.2f}", f"{bench_return:+.2f}%", f"{bench_sharpe:.2f}"]
         }
         st.dataframe(pd.DataFrame(stats_data), hide_index=True, use_container_width=True)

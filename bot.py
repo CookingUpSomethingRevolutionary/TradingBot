@@ -3,6 +3,7 @@ import numpy as np
 import time
 import sys
 import os
+import yfinance as yf
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
@@ -25,64 +26,49 @@ except Exception as e:
     print(f"Auth Error: {e}")
     sys.exit(1)
 
-# Core 30 liquid Mega-Cap Tech/Growth stocks
-stock_universe = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "TSLA", "AVGO", 
-    "COST", "PEP", "CSCO", "ADBE", "TXN", "NFLX", "AMD", "QCOM", 
-    "INTC", "AMAT", "ISRG", "HON", "AMGN", "SBUX", "GILD", "BKNG", 
-    "MDLZ", "ADI", "LRCX", "VRTX", "PANW", "SNPS"
-]
 BENCHMARK_TICKER = "SPY"
 
 def calculate_production_targets():
-    print("Scanning Individual Stock Momentum Matrices...")
+    print("Scraping live active S&P 500 constituent lists...")
+    wiki_tables = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')
+    active_symbols = wiki_tables[0]['Symbol'].str.replace('.', '-', regex=False).tolist()
+    
+    all_tickers = active_symbols + [BENCHMARK_TICKER]
+    
+    print("Downloading historical reference parameters...")
+    df = yf.download(all_tickers, period="2y", interval="1d", progress=False)
+    df_close = df['Close'] if isinstance(df.columns, pd.MultiIndex) else df
+    df_close = df_close.ffill()
+    
     momentum_scores = {}
-    
-    # We need at least ~300 days of history to calculate a 252-day lookback + 200 SMA
-    start_date = pd.Timestamp.now() - pd.DateOffset(days=400) 
-    
-    all_tickers = stock_universe + [BENCHMARK_TICKER]
-    
-    # Fetch Data
-    request_params = StockBarsRequest(symbol_or_symbols=all_tickers, timeframe=TimeFrame.Day, start=start_date)
-    bars_df = data_client.get_stock_bars(request_params).df
-    
-    spy_data = bars_df.loc[BENCHMARK_TICKER].copy()
-    
-    # Score the stocks
-    for ticker in stock_universe:
-        try:
-            df_ticker = bars_df.loc[ticker]
-            # Need at least 252 bars for 1-year momentum
-            if len(df_ticker) >= 252:
-                start_p = float(df_ticker['close'].iloc[-252])
-                end_p = float(df_ticker['close'].iloc[-1])
+    for ticker in active_symbols:
+        if ticker in df_close.columns:
+            series = df_close[ticker].dropna()
+            if len(series) >= 252:
+                start_p = float(series.iloc[-252])
+                end_p = float(series.iloc[-1])
                 momentum_scores[ticker] = (end_p - start_p) / start_p
-        except KeyError:
-            continue  # Skip if stock data didn't fetch properly
-        
+
     valid_candidates = [t for t, score in momentum_scores.items() if score > 0]
     ranked_stocks = sorted(valid_candidates, key=momentum_scores.get, reverse=True)
     
-    # Calculate SPY 200 SMA
-    spy_close = spy_data['close']
-    spy_sma200 = float(spy_close.rolling(window=200).mean().iloc[-1])
-    current_spy_price = float(spy_close.iloc[-1])
+    spy_series = df_close[BENCHMARK_TICKER]
+    spy_sma200 = float(spy_series.rolling(window=200).mean().iloc[-1])
+    current_spy_price = float(spy_series.iloc[-1])
     
-    print(f"\n--- Institutional Regime Matrix ---")
-    print(f"SPY Price: ${current_spy_price:.2f} | SPY SMA200: ${spy_sma200:.2f}")
+    print(f"\n--- S&P 500 Market Regime Framework ---")
+    print(f"SPY Spot: ${current_spy_price:.2f} | SPY 200-SMA: ${spy_sma200:.2f}")
     
-    # If SPY > 200 SMA, Buy Top 5 Stocks
     if current_spy_price > spy_sma200 and len(ranked_stocks) > 0:
         leaders = ranked_stocks[:5]
-        print(f"Regime Status: Bullish Extension. Target allocations: {leaders}")
+        print(f"Regime Metric: Bullish. Target Picks: {leaders}")
         return leaders
     else:
-        print("Regime Status: Risk Mitigation Alert. Safely offloading capital to Cash.")
-        return []  # Empty array signals a 100% Cash pivot
+        print("Regime Metric: Bearish Risk Avoidance. Moving allocations to Cash.")
+        return []
 
 def run_live_rebalance():
-    print("Initiating Systematic Rebalance Loop...")
+    print("Initiating Rebalance Execution Loop...")
     target_tickers = calculate_production_targets()
     
     positions = trading_client.get_all_positions()
@@ -91,7 +77,7 @@ def run_live_rebalance():
     liquidated_any = False
     for symbol in list(open_positions.keys()):
         if symbol not in target_tickers:
-            print(f"Liquidating asset allocation to preserve cash: {symbol}")
+            print(f"Selling asset: {symbol}")
             trading_client.submit_order(
                 order_data=MarketOrderRequest(symbol=symbol, qty=open_positions[symbol], side=OrderSide.SELL, time_in_force=TimeInForce.DAY)
             )
@@ -99,10 +85,10 @@ def run_live_rebalance():
             liquidated_any = True
             
     if liquidated_any:
-        time.sleep(15)  # Wait for fills to settle and cash to return to buying power
+        time.sleep(15) 
         
     if not target_tickers:
-        print("Capital protection routing executed successfully. Portfolio holds 100% Cash.")
+        print("Capital protection completed. Portfolio matching 100% cash.")
         return
         
     updated_account = trading_client.get_account()
@@ -111,7 +97,7 @@ def run_live_rebalance():
     
     for ticker in target_tickers:
         if ticker in open_positions:
-            continue  # Already holding, skip (or you could calculate drift here later)
+            continue  
             
         request_params = StockBarsRequest(symbol_or_symbols=ticker, timeframe=TimeFrame.Day, limit=1)
         latest_bars = data_client.get_stock_bars(request_params).df
@@ -119,13 +105,12 @@ def run_live_rebalance():
         target_shares_qty = int(target_capital_allocation // asset_price)
         
         if target_shares_qty > 0:
-            print(f"Deploying Capital Matrix -> Ticker: {ticker} | Shares: {target_shares_qty}")
+            print(f"Purchasing Asset -> Ticker: {ticker} | Shares: {target_shares_qty}")
             try:
                 trading_client.submit_order(
                     order_data=MarketOrderRequest(symbol=ticker, qty=target_shares_qty, side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
                 )
             except Exception:
-                # Fallback if precision fails slightly due to real-time price slippage
                 adjusted_qty = int((target_capital_allocation * 0.95) // asset_price)
                 if adjusted_qty > 0:
                     trading_client.submit_order(
@@ -136,4 +121,4 @@ if __name__ == "__main__":
     if trading_client.get_clock().is_open:
         run_live_rebalance()
     else:
-        print("Execution Halted: The stock market is currently closed.")
+        print("Execution Paused: Market is closed.")
