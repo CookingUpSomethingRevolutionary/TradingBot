@@ -7,23 +7,23 @@ BENCHMARK_TICKER = "SPY"
 FRICTION_PCT = 0.0010  # 10 bps transaction drag
 DRIFT_BUFFER = 0.05    
 
-print("Fetching dynamic S&P 500 constituent history from Wikipedia...")
-# 1. Fetch current components
-wiki_tables = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')
-current_df = wiki_tables[0]
-current_constituents = set(current_df['Symbol'].str.replace('.', '-', regex=False).tolist())
+# 1. Load the user's monthly S&P 500 historical constituent mapping file
+print("Loading monthly survivorship-free constituent matrix...")
+try:
+    universe_map = pd.read_csv("sp500_monthly_2016_present.csv", parse_dates=["Date"], index_col="Date")
+except FileNotFoundError:
+    print("CRITICAL ERROR: sp500_monthly_2016_present.csv not found in the working directory!")
+    exit(1)
 
-# 2. Fetch historical changes to track additions/removals
-changes_df = wiki_tables[1]
-changes_df.columns = changes_df.columns.get_level_values(0)  # Flatten multi-index if present
+# Compile a master unique set of all symbols that ever entered the index to batch download data
+all_historical_tickers = set()
+for tickers_str in universe_map["Tickers"].dropna():
+    for t in tickers_str.split(","):
+        all_historical_tickers.add(t.strip().replace('.', '-'))
 
-# Clean up date column
-changes_df['Date'] = pd.to_datetime(changes_df['Date'].str.split('(').str[0].str.strip(), errors='coerce')
-changes_df = changes_df.dropna(subset=['Date']).sort_values('Date', ascending=False)
-
-# Reconstruct universe backwards from today
-start_date = "2018-01-01"
-end_date = pd.Timestamp.now().strftime("%Y-%m-%d")
+# Set dates to ensure baseline lookback availability for the 2016 start line
+start_date = "2015-01-01"
+end_date = "2026-07-18"
 
 print("Downloading benchmark index data...")
 df_spy = yf.download(BENCHMARK_TICKER, start=start_date, end=end_date, interval="1d", progress=False)
@@ -31,21 +31,14 @@ df_universe = pd.DataFrame(index=df_spy.index)
 df_universe['US_Stocks'] = df_spy['Close'] if not isinstance(df_spy.columns, pd.MultiIndex) else df_spy['Close'][BENCHMARK_TICKER]
 df_universe['SPY_SMA200'] = df_universe['US_Stocks'].rolling(window=200).mean()
 
-# Track unique tickers that have *ever* touched the index in this window to batch download data safely
-all_historical_tickers = set(current_constituents)
-for _, row in changes_df.iterrows():
-    if pd.notna(row['Added']['Ticker']): all_historical_tickers.add(row['Added']['Ticker'].replace('.', '-'))
-    if pd.notna(row['Removed']['Ticker']): all_historical_tickers.add(row['Removed']['Ticker'].replace('.', '-'))
-
-print(f"Downloading historical data for all {len(all_historical_tickers)} unique S&P 500 components...")
-# Download data in chunks to avoid API timeout crashes
+print(f"Downloading historical price data for all {len(all_historical_tickers)} unique S&P 500 symbols...")
 ticker_list = list(all_historical_tickers)
-chunk_size = 50
+chunk_size = 40
 close_prices = pd.DataFrame(index=df_universe.index)
 
 for i in range(0, len(ticker_list), chunk_size):
     chunk = ticker_list[i:i+chunk_size]
-    print(f"Downloading chunk {i//chunk_size + 1}...")
+    print(f"Downloading symbol chunk {i//chunk_size + 1} of {len(ticker_list)//chunk_size + 1}...")
     chunk_data = yf.download(chunk, start=start_date, end=end_date, interval="1d", progress=False)
     if isinstance(chunk_data.columns, pd.MultiIndex):
         chunk_close = chunk_data['Close']
@@ -55,10 +48,20 @@ for i in range(0, len(ticker_list), chunk_size):
         close_prices[col] = chunk_close[col]
     time.sleep(1)
 
+close_prices = close_prices.ffill()
+
 lookback_period = 252
 initial_capital = 10000
 portfolio_value = initial_capital
-bh_shares = portfolio_value / df_universe['US_Stocks'].iloc[lookback_period]
+
+# Align start index to ensure we are at or past 2016-01-01 and have baseline lookback rows
+start_idx = 0
+for i, timestamp in enumerate(df_universe.index):
+    if timestamp >= pd.Timestamp("2016-01-01") and i >= lookback_period:
+        start_idx = i
+        break
+
+bh_shares = portfolio_value / df_universe['US_Stocks'].iloc[start_idx]
 
 current_holdings = {}  
 cash_pool = portfolio_value
@@ -66,10 +69,10 @@ equity_timeline = []
 benchmark_timeline = []
 date_timeline = []
 
-print("Running Survivorship-Bias-Free Monthly Rotation...")
+print("Running Monthly Bias-Free Rebalancing Loop...")
 last_rebalanced_month = None
 
-for idx in range(lookback_period, len(df_universe)):
+for idx in range(start_idx, len(df_universe)):
     timestamp = df_universe.index[idx]
     current_row = df_universe.iloc[idx]
     current_year_month = (timestamp.year, timestamp.month)
@@ -85,19 +88,14 @@ for idx in range(lookback_period, len(df_universe)):
     if last_rebalanced_month is None or current_year_month != last_rebalanced_month:
         last_rebalanced_month = current_year_month
         
-        # DYNAMIC UNIVERSE DISCOVERY: Reconstruct exact S&P 500 pool for *this exact day* in history
-        active_constituents = current_constituents.copy()
-        # Roll forward changes from today back to the historical timestamp
-        future_changes = changes_df[changes_df['Date'] > timestamp]
-        for _, change in future_changes.iterrows():
-            added = change['Added']['Ticker']
-            removed = change['Removed']['Ticker']
-            if pd.notna(added):
-                active_constituents.discard(added.replace('.', '-'))
-            if pd.notna(removed):
-                active_constituents.add(removed.replace('.', '-'))
+        # Pull the closest preceding monthly pool row from the uploaded CSV file
+        closest_date = universe_map.index[universe_map.index <= timestamp].max()
+        if pd.isna(closest_date):
+            continue
+            
+        tickers_string = universe_map.loc[closest_date, "Tickers"]
+        active_constituents = [t.strip().replace('.', '-') for t in tickers_string.split(",")]
         
-        # Filter pool for active tickers with data 1 year ago
         lookback_timestamp = df_universe.index[idx - lookback_period]
         valid_pool = []
         for ticker in active_constituents:
@@ -105,12 +103,13 @@ for idx in range(lookback_period, len(df_universe)):
                 if pd.notna(close_prices.loc[timestamp, ticker]) and pd.notna(close_prices.loc[lookback_timestamp, ticker]):
                     valid_pool.append(ticker)
         
-        # Calculate Relative Momentum Metrics
+        # Calculate momentum metrics: M = \frac{P_{end} - P_{start}}{P_{start}}
         momentum_scores = {}
         for asset in valid_pool:
             p_start = close_prices.loc[lookback_timestamp, asset]
             p_end = close_prices.loc[timestamp, asset]
-            momentum_scores[asset] = (p_end - p_start) / p_start
+            if p_start > 0:
+                momentum_scores[asset] = (p_end - p_start) / p_start
             
         valid_candidates = [asset for asset, score in momentum_scores.items() if score > 0]
         ranked_stocks = sorted(valid_candidates, key=momentum_scores.get, reverse=True)
@@ -119,14 +118,13 @@ for idx in range(lookback_period, len(df_universe)):
         target_weights["Cash"] = 0.0
         
         if pd.notna(spy_sma) and spy_price > spy_sma and len(ranked_stocks) > 0:
-            leaders = ranked_stocks[:5]  # Buy the top 5 valid dynamic winners
+            leaders = ranked_stocks[:5]
             weight_per_asset = 1.0 / len(leaders)
             for asset in leaders:
                 target_weights[asset] = weight_per_asset
         else:
             target_weights["Cash"] = 1.0
             
-        # Execute rebalance adjustments
         current_weights = {t: 0.0 for t in all_historical_tickers}
         for asset in list(current_holdings.keys()):
             if asset in close_prices.columns:
@@ -167,4 +165,4 @@ for idx in range(lookback_period, len(df_universe)):
 results_df = pd.DataFrame({"Strategy_Equity": equity_timeline, "Benchmark_Equity": benchmark_timeline}, index=date_timeline)
 results_df.index.name = "Date"
 results_df.to_csv("backtest_results.csv")
-print("✅ Bias-Free Momentum Backtest complete!")
+print("✅ Bias-Free Dynamic S&P 500 Backtest complete!")

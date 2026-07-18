@@ -29,10 +29,15 @@ except Exception as e:
 BENCHMARK_TICKER = "SPY"
 
 def calculate_production_targets():
-    print("Scraping live active S&P 500 constituent lists...")
-    wiki_tables = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')
-    active_symbols = wiki_tables[0]['Symbol'].str.replace('.', '-', regex=False).tolist()
-    
+    print("Reading active stock symbols from local reference layout...")
+    try:
+        universe_map = pd.read_csv("sp500_monthly_2016_present.csv", parse_dates=["Date"], index_col="Date")
+        latest_row = universe_map.iloc[-1]
+        active_symbols = [t.strip().replace('.', '-') for t in latest_row["Tickers"].split(",")]
+    except Exception as e:
+        print(f"File Access Error: {e}. Stopping execution safely.")
+        return None
+
     all_tickers = active_symbols + [BENCHMARK_TICKER]
     
     print("Downloading historical reference parameters...")
@@ -47,7 +52,8 @@ def calculate_production_targets():
             if len(series) >= 252:
                 start_p = float(series.iloc[-252])
                 end_p = float(series.iloc[-1])
-                momentum_scores[ticker] = (end_p - start_p) / start_p
+                if start_p > 0:
+                    momentum_scores[ticker] = (end_p - start_p) / start_p
 
     valid_candidates = [t for t, score in momentum_scores.items() if score > 0]
     ranked_stocks = sorted(valid_candidates, key=momentum_scores.get, reverse=True)
@@ -70,7 +76,9 @@ def calculate_production_targets():
 def run_live_rebalance():
     print("Initiating Rebalance Execution Loop...")
     target_tickers = calculate_production_targets()
-    
+    if target_tickers is None:
+        return  
+        
     positions = trading_client.get_all_positions()
     open_positions = {p.symbol: int(p.qty) for p in positions}
     

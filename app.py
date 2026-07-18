@@ -7,7 +7,7 @@ import os
 from alpaca.trading.client import TradingClient
 
 st.set_page_config(page_title="Henry's Trading Bot", page_icon="⚡", layout="wide")
-st.title("⚡ Henry's Dynamic S&P 500 Momentum Rotation System")
+st.title("⚡ Henry's Dynamic S&P 500 Monthly Momentum System")
 st.markdown("---")
 
 tab1, tab2 = st.tabs(["🔮 Live Production Environment", "⏳ Historical Backtest Engine"])
@@ -71,6 +71,7 @@ with tab2:
         strat_pcts = backtest_df["Strategy_Equity"].pct_change().dropna()
         bench_pcts = backtest_df["Benchmark_Equity"].pct_change().dropna()
         
+        # Sharpe ratio calculation: S = \frac{\overline{R}_p}{\sigma_p} \times \sqrt{252}
         strat_sharpe = (strat_pcts.mean() / strat_pcts.std()) * np.sqrt(252) if strat_pcts.std() != 0 else 0
         bench_sharpe = (bench_pcts.mean() / bench_pcts.std()) * np.sqrt(252) if bench_pcts.std() != 0 else 0
         
