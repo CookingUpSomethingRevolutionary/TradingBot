@@ -1,6 +1,5 @@
-alpaca_trade_api
-numpy
+alpaca-py
 pandas
+numpy
 plotly
 streamlit
-yfinance
