@@ -1,197 +1,197 @@
-import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
 import numpy as np
+import time
+import sys
 import os
 import json
 
 from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
-st.set_page_config(
-    page_title="Henry's Trading Bot",
-    page_icon="⚡",
-    layout="wide"
-)
-
-st.title("⚡ Henry's Trading Bot")
-st.markdown("---")
-
-tab1, tab2 = st.tabs(["🔮 Live Production Environment", "⏳ Historical Backtest Engine"])
-
-asset_universe = {
-    "US_Stocks": "SPY",
-    "Tech_Stocks": "QQQ",
-    "Gold": "GLD",
-    "Bonds": "TLT",
-    "Real_Estate": "VNQ"
-}
+API_KEY = os.getenv("ALPACA_API_KEY")
+SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 STATE_FILE = "bot_state.json"
+MAX_DRAWDOWN_LIMIT = 0.15
+DRIFT_BUFFER = 0.05    
 
-# ==========================================
-# TAB 1: LIVE PRODUCTION ENVIRONMENT
-# ==========================================
-with tab1:
-    API_KEY = st.secrets.get("ALPACA_API_KEY") or os.getenv("ALPACA_API_KEY")
-    SECRET_KEY = st.secrets.get("ALPACA_SECRET_KEY") or os.getenv("ALPACA_SECRET_KEY")
+if not API_KEY or not SECRET_KEY:
+    print("CRITICAL ERROR: Alpaca API keys are missing!")
+    sys.exit(1)
 
-    if not API_KEY or not SECRET_KEY:
-        st.warning("🔒 **Running in Preview Mode:** Connect your Alpaca secrets to unlock live account telemetry.")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Equity", "$100,000.00", "Preview")
-        col2.metric("System Mode", "Standby")
-        col3.metric("API Gateway", "Disengaged")
-    else:
+try:
+    trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
+    data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
+    account = trading_client.get_account()
+except Exception as e:
+    print(f"Error authenticating with Alpaca API: {e}")
+    sys.exit(1)
+
+# Combined Active Asset Universe Dictionary
+core_universe = {"US_Stocks": "SPY", "Tech_Stocks": "QQQ", "Gold": "GLD", "Bonds": "TLT", "Real_Estate": "VNQ"}
+CASH_PROXY_TICKER = "BIL"
+
+def load_or_init_state(current_equity):
+    if os.path.exists(STATE_FILE):
         try:
-            trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
-            data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
-            account = trading_client.get_account()
-            
-            # --- PARSE AND INJECT BOT STATE DATA FOR DASHBOARD TELEMETRY ---
-            breaker_status = "🟢 Operational"
-            peak_val_str = "N/A"
-            drawdown_str = "0.00%"
-            
-            if os.path.exists(STATE_FILE):
-                try:
-                    with open(STATE_FILE, "r") as f:
-                        state_data = json.load(f)
-                        if state_data.get("is_tripped", False):
-                            breaker_status = "🚨 TRIPPED & LOCKED"
-                        p_eq = state_data.get("peak_equity", float(account.portfolio_value))
-                        curr_eq = float(account.portfolio_value)
-                        peak_val_str = f"${p_eq:,.2f}"
-                        drawdown_str = f"{((p_eq - curr_eq) / p_eq)*100:.2f}%"
-                except Exception:
-                    pass
-            
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Total Portfolio Equity", f"${float(account.portfolio_value):,.2f}")
-            col2.metric("Available Cash Balance", f"${float(account.cash):,.2f}")
-            
-            # Show safety breaker statuses explicitly in core interface metrics
-            if "TRIPPED" in breaker_status:
-                col3.metric("Circuit Breaker Switch", breaker_status, delta=f"Drawdown: {drawdown_str}", delta_color="inverse")
-                st.error(f"🚨 **System Lockout Alert:** The circuit breaker state has locked live trade routing. Current Drawdown from Peak ({peak_val_str}) is violating threshold allocations.")
-            else:
-                col3.metric("Circuit Breaker Switch", breaker_status, delta=f"Drawdown: {drawdown_str}", delta_color="normal")
-                
-            col4.metric("Engine Health Status", "Online", delta="Operational")
-            
-            st.markdown("---")
-            st.subheader("📊 Current Strategy State Indicators")
-            
-            @st.cache_data(ttl=300)
-            def run_live_indicators():
-                try:
-                    momentum_scores = {}
-                    start_date = pd.Timestamp.now() - pd.DateOffset(months=15)
-                    tickers = list(asset_universe.values())
-                    
-                    request_params = StockBarsRequest(symbol_or_symbols=tickers, timeframe=TimeFrame.Day, start=start_date)
-                    bars_df = data_client.get_stock_bars(request_params).df
-                    
-                    if bars_df.empty:
-                        return None
-                    
-                    spy_bars = bars_df.xs("SPY", level=0) if "SPY" in bars_df.index.levels[0] else bars_df
-                    
-                    for name, ticker in asset_universe.items():
-                        b = bars_df.xs(ticker, level=0) if ticker in bars_df.index.levels[0] else bars_df
-                        if len(b) >= 252:
-                            start_val = float(b['close'].iloc[-252])
-                            end_val = float(b['close'].iloc[-1])
-                            momentum_scores[ticker] = (end_val - start_val) / start_val
-                    
-                    spy_close = spy_bars['close']
-                    spy_ema50 = spy_close.ewm(span=50, adjust=False).mean()
-                    
-                    change = spy_close.diff()
-                    gain = change.mask(change < 0, 0).ewm(com=13, adjust=False).mean()
-                    loss = -change.mask(change > 0, 0).ewm(com=13, adjust=False).mean().replace(0, 0.00001)
-                    spy_rsi = 100 - (100 / (1 + (gain / loss)))
-                    
-                    ranked = sorted(momentum_scores, key=momentum_scores.get, reverse=True)
-                    curr_p, curr_e, curr_r = float(spy_close.iloc[-1]), float(spy_ema50.iloc[-1]), float(spy_rsi.iloc[-1])
-                    
-                    healthy = curr_p > curr_e and curr_r < 70
-                    regime = "Bull Market Run (Equities Active)" if healthy else "Defensive Mode Triggered (Safe Assets)"
-                    targets = ranked[:2] if healthy else [a for a in ranked if a in ['GLD', 'TLT', 'VNQ']][:2]
-                    
-                    return momentum_scores, curr_p, curr_e, curr_r, regime, targets, spy_close, spy_ema50
-                except Exception as e:
-                    return None
-                  
-            engine_out = run_live_indicators()
-            if engine_out:
-                scores, spy_p, spy_e, spy_r, regime_str, target_list, spy_hist, ema_hist = engine_out
-                
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("SPY Spot", f"${spy_p:.2f}")
-                m2.metric("SPY 50 EMA Filter", f"${spy_e:.2f}")
-                m3.metric("SPY RSI Parameter", f"{spy_r:.1f}")
-                
-                if "Bull" in regime_str:
-                    m4.success(f"🟢 **Regime:** {regime_str}")
-                else:
-                    m4.warning(f"⚠️ **Regime:** {regime_str}")
-                
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=spy_hist.index, y=spy_hist.values, name='SPY Price', line=dict(color='#00CC96')))
-                fig.add_trace(go.Scatter(x=ema_hist.index, y=ema_hist.values, name='50 EMA', line=dict(color='#EF553B', dash='dash')))
-                fig.update_layout(template="plotly_dark", height=320, margin=dict(l=10, r=10, t=10, b=10))
-                st.plotly_chart(fig, use_container_width=True)
-                
-                st.info(f"🎯 **System Target Allocations:** {', '.join(target_list)}")
-                
-            st.markdown("---")
-            st.subheader("📦 Currently Deployed Positions")
-            live_pos = trading_client.get_all_positions()
-            if live_pos:
-                p_records = []
-                for p in live_pos:
-                    p_records.append({
-                        "Asset Ticker": p.symbol,
-                        "Allocated Shares": int(p.qty),
-                        "Avg Entry Price": f"${float(p.avg_entry_price):,.2f}",
-                        "Current Valuation": f"${float(p.current_price):,.2f}",
-                        "Market Net Value": float(p.market_value),
-                        "Unrealized Growth": f"${float(p.unrealized_pl):+,.2f} ({float(p.unrealized_plpc)*100:+.2f}%)"
-                    })
-                st.dataframe(pd.DataFrame(p_records), hide_index=True, use_container_width=True)
-            else:
-                st.info("No active open positions found.")
-        except Exception as e:
-            st.error(f"Engine connection processing error: {e}")
+            with open(STATE_FILE, "r") as f:
+                return json.load(f)
+        except Exception: pass
+    return {"peak_equity": current_equity, "is_tripped": False, "last_rebalanced_month": 0}
 
-# ==========================================
-# TAB 2: HISTORICAL BACKTEST ENGINE
-# ==========================================
-with tab2:
-    st.subheader("⏳ Friction-Modeled Backtest Analytics")
-    csv_file = "backtest_results.csv"
+def save_state(state):
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f, indent=4)
+    except Exception as e: print(f"⚠️ State save error: {e}")
+
+def calculate_dynamic_targets():
+    print("Fetching historical data arrays for Ensemble Matrix calculations...")
+    ensemble_scores = {}
+    asset_sma200s = {}
+    asset_prices = {}
     
-    if not os.path.exists(csv_file):
-        st.info("ℹ️ **Backtest Data File Missing:** Please run `python backtest.py` locally to compile the friction-modeled baseline.")
+    start_date = pd.Timestamp.now() - pd.DateOffset(months=16)
+    all_tickers = list(core_universe.values()) + [CASH_PROXY_TICKER]
+    
+    request_params = StockBarsRequest(symbol_or_symbols=all_tickers, timeframe=TimeFrame.Day, start=start_date)
+    bars_df = data_client.get_stock_bars(request_params).df
+    
+    # Store immediate spot pricing for target allocations
+    for t in all_tickers:
+        asset_prices[t] = float(bars_df.loc[t]['close'].iloc[-1])
+        
+    # Calculate scores across the core equity/commodity assets
+    for name, ticker in core_universe.items():
+        df_ticker = bars_df.loc[ticker].copy()
+        df_ticker['SMA200'] = df_ticker['close'].rolling(window=200).mean()
+        
+        p_now = float(df_ticker['close'].iloc[-1])
+        p_3m = float(df_ticker['close'].iloc[-63])
+        p_6m = float(df_ticker['close'].iloc[-126])
+        p_12m = float(df_ticker['close'].iloc[-252])
+        
+        # Upgrade 2: Apply multi-window tracking weights
+        ret_3m = (p_now - p_3m) / p_3m
+        ret_6m = (p_now - p_6m) / p_6m
+        ret_12m = (p_now - p_12m) / p_12m
+        
+        ensemble_scores[ticker] = (0.40 * ret_3m) + (0.30 * ret_6m) + (0.30 * ret_12m)
+        asset_sma200s[ticker] = float(df_ticker['SMA200'].iloc[-1])
+
+    ranked_assets = sorted(ensemble_scores, key=ensemble_scores.get, reverse=True)
+    
+    spy_p = asset_prices['SPY']
+    spy_sma = asset_sma200s['SPY']
+    
+    print(f"\n--- Multi-Window Health Matrix ---")
+    print(f"SPY Spot: ${spy_p:.2f} | SPY Macro 200 SMA Filter: ${spy_sma:.2f}")
+    
+    if spy_p > spy_sma:
+        print("Regime Status: Structural Bull Trend. Allocating to ensemble leaders.")
+        candidates = ranked_assets[:2]
     else:
-        backtest_df = pd.read_csv(csv_file, parse_dates=["Date"], index_col="Date")
+        print("Regime Status: Defensive Caution Flag. Restricting to safe haven filters.")
+        safe_tickers = ['GLD', 'TLT', 'VNQ']
+        safe_pool = [a for a in ranked_assets if a in safe_tickers]
+        candidates = safe_pool[:2] if len(safe_pool) >= 2 else ranked_assets[:2]
         
-        strat_final = backtest_df["Strategy_Equity"].iloc[-1]
-        bench_final = backtest_df["Benchmark_Equity"].iloc[-1]
+    # Absolute Momentum verification with automated yield parking transitions
+    target_weights = {}
+    for ticker in candidates:
+        if asset_prices[ticker] > asset_sma200s[ticker]:
+            print(f"  -> {ticker} Validated (Above 200 SMA). Target weight allocation: 50%")
+            target_weights[ticker] = target_weights.get(ticker, 0.0) + 0.50
+        else:
+            print(f"  -> {ticker} Fails Absolute Trend. Routing 50% allocation to Yield Parking ({CASH_PROXY_TICKER}).")
+            target_weights[CASH_PROXY_TICKER] = target_weights.get(CASH_PROXY_TICKER, 0.0) + 0.50
+            
+    return target_weights, asset_prices
+
+def run_live_rebalance():
+    print("Initiating Systematic Rebalance Loop...")
+    account_data = trading_client.get_account()
+    total_portfolio_equity = float(account_data.portfolio_value)
+    
+    state = load_or_init_state(total_portfolio_equity)
+    current_month = pd.Timestamp.now().month
+    
+    if state.get("is_tripped", False):
+        print("❌ EXECUTION BLOCKED: Circuit breaker state is locked.")
+        sys.exit(1)
         
-        strat_return = ((strat_final - 10000) / 10000) * 100
-        bench_return = ((bench_final - 10000) / 10000) * 100
-        alpha_excess = strat_return - bench_return
+    if total_portfolio_equity > state["peak_equity"]:
+        state["peak_equity"] = total_portfolio_equity
         
-        b_col1, b_col2, b_col3 = st.columns(3)
-        b_col1.metric("Friction Strategy Portfolio Value", f"${strat_final:,.2f}", f"{strat_return:+.2f}% Total Return")
-        b_col2.metric("S&P 500 Benchmark Value", f"${bench_final:,.2f}", f"{bench_return:+.2f}% Total Return")
-        b_col3.metric("System Net Alpha Multiplier", f"{alpha_excess:+.2f}%", "Friction Deducted", delta_color="normal")
+    if ((state["peak_equity"] - total_portfolio_equity) / state["peak_equity"]) >= MAX_DRAWDOWN_LIMIT:
+        print("🚨🚨 CIRCUIT BREAKER VIOLATION: Liquidating all open positions...")
+        state["is_tripped"] = True
+        save_state(state)
+        for p in trading_client.get_all_positions():
+            trading_client.submit_order(MarketOrderRequest(symbol=p.symbol, qty=int(p.qty), side=OrderSide.SELL, time_in_force=TimeInForce.DAY))
+        sys.exit(1)
+
+    if state.get("last_rebalanced_month") == current_month:
+        print("Execution Gate Checked: Rebalance cycle already performed this month.")
+        sys.exit(0)
+
+    target_weights, current_prices = calculate_dynamic_targets()
+    open_positions = {p.symbol: int(p.qty) for p in trading_client.get_all_positions()}
+    
+    # 5% Drift Tolerance Gate Check
+    trigger_trade = False
+    if set(target_weights.keys()) != set(open_positions.keys()):
+        trigger_trade = True
+    else:
+        for ticker, target_w in target_weights.items():
+            actual_w = (open_positions[ticker] * current_prices[ticker]) / total_portfolio_equity
+            if abs(actual_w - target_w) > DRIFT_BUFFER:
+                trigger_trade = True
+                break
+
+    if not trigger_trade:
+        print("✅ Portfolio weights sit cleanly within the 5% buffer zone. Transaction churn bypassed.")
+        state["last_rebalanced_month"] = current_month
+        save_state(state)
+        sys.exit(0)
+
+    print("Drift threshold exceeded. Commencing rebalance execution pipeline...")
+    
+    # Sell phase for out-of-bounds metrics
+    for symbol in list(open_positions.keys()):
+        if symbol not in target_weights:
+            print(f"Liquidating asset assignment: {symbol}")
+            trading_client.submit_order(MarketOrderRequest(symbol=symbol, qty=open_positions[symbol], side=OrderSide.SELL, time_in_force=TimeInForce.DAY))
+            del open_positions[symbol]
+            time.sleep(2)
+
+    # Buy/Adjust weights phase
+    updated_account = trading_client.get_account()
+    total_portfolio_equity = float(updated_account.portfolio_value)
+    
+    for ticker, target_w in target_weights.items():
+        asset_price = current_prices[ticker]
+        target_shares_qty = int((total_portfolio_equity * target_w) // asset_price)
+        current_qty = open_positions.get(ticker, 0)
         
-        fig_hist = go.Figure()
-        fig_hist.add_trace(go.Scatter(x=backtest_df.index, y=backtest_df['Strategy_Equity'], name="Friction-Modeled Momentum", line=dict(color="#FFB900", width=3)))
-        fig_hist.add_trace(go.Scatter(x=backtest_df.index, y=backtest_df['Benchmark_Equity'], name="S&P 500 Buy & Hold (SPY)", line=dict(color="#888888", width=1.5, dash='dash')))
-        fig_hist.update_layout(template="plotly_dark", height=450, margin=dict(l=20, r=20, t=20, b=20))
-        st.plotly_chart(fig_hist, use_container_width=True)
+        if current_qty == 0 and target_shares_qty > 0:
+            print(f"Deploying Allocation: {target_shares_qty} shares of {ticker}")
+            trading_client.submit_order(MarketOrderRequest(symbol=ticker, qty=target_shares_qty, side=OrderSide.BUY, time_in_force=TimeInForce.DAY))
+        elif current_qty != target_shares_qty:
+            qty_delta = target_shares_qty - current_qty
+            side = OrderSide.BUY if qty_delta > 0 else OrderSide.SELL
+            print(f"Modifying Position Balance -> {ticker}: {abs(qty_delta)} shares ({side.name})")
+            trading_client.submit_order(MarketOrderRequest(symbol=ticker, qty=abs(qty_delta), side=side, time_in_force=TimeInForce.DAY))
+
+    state["last_rebalanced_month"] = current_month
+    save_state(state)
+    print("\nProduction Rebalance Loop Successfully Concluded.")
+
+if __name__ == "__main__":
+    if trading_client.get_clock().is_open:
+        run_live_rebalance()
+    else:
+        print("Market closed. Standing by.")
