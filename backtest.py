@@ -96,14 +96,13 @@ for idx in range(lookback_period, len(df_universe)):
             
         # Execute allocation changes if targets switch
         if set(current_holdings.keys()) != set(target_assets):
-            current_valuations = {asset: current_holdings.get(asset, 0) * current_row[asset] for asset in sector_tickers.keys()}
             total_friction_drag = 0
             
-            # Formulate hypothetical allocations to evaluate trade friction penalties
-            hypothetical_weights = {s: 0.50 if s in target_assets else 0.0 for s in sector_tickers.keys()}
+            # Formulate friction safely by avoiding 0 * NaN lookups on un-launched assets
             for asset in sector_tickers.keys():
-                ideal_val = total_portfolio_value * hypothetical_weights[asset]
-                trade_volume = abs(ideal_val - current_valuations.get(asset, 0))
+                current_val = current_holdings[asset] * current_row[asset] if asset in current_holdings else 0.0
+                ideal_val = total_portfolio_value * 0.50 if asset in target_assets else 0.0
+                trade_volume = abs(ideal_val - current_val)
                 total_friction_drag += trade_volume * FRICTION_PCT
                 
             portfolio_value = total_portfolio_value - total_friction_drag
@@ -122,4 +121,4 @@ for idx in range(lookback_period, len(df_universe)):
 results_df = pd.DataFrame({"Strategy_Equity": equity_timeline, "Benchmark_Equity": benchmark_timeline}, index=date_timeline)
 results_df.index.name = "Date"
 results_df.to_csv("backtest_results.csv")
-print("✅ Multi-Inception Sector Backtest completed successfully!")
+print("✅ Multi-Inception Sector Backtest completed successfully with fixed math!")
