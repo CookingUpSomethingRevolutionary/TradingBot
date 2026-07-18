@@ -25,7 +25,6 @@ except Exception as e:
     print(f"Auth Error: {e}")
     sys.exit(1)
 
-# Active live deployment targets (All 11 Sectors)
 sector_universe = {
     "XLK": "XLK", "XLV": "XLV", "XLF": "XLF", "XLY": "XLY", 
     "XLI": "XLI", "XLP": "XLP", "XLE": "XLE", "XLB": "XLB", 
@@ -33,7 +32,7 @@ sector_universe = {
 }
 BENCHMARK_TICKER = "SPY"
 
-def calculate_sector_targets():
+def calculate_production_targets():
     print("Scanning Sector Momentum Matrices across 11 Asset Channels...")
     momentum_scores = {}
     start_date = pd.Timestamp.now() - pd.DateOffset(months=15)
@@ -50,33 +49,27 @@ def calculate_sector_targets():
         end_p = float(df_ticker['close'].iloc[-1])
         momentum_scores[ticker] = (end_p - start_p) / start_p
         
-    ranked_sectors = sorted(momentum_scores, key=momentum_scores.get, reverse=True)
+    valid_candidates = [t for t, score in momentum_scores.items() if score > 0]
+    ranked_sectors = sorted(valid_candidates, key=momentum_scores.get, reverse=True)
     
     spy_close = spy_data['close']
     spy_ema50 = float(spy_close.ewm(span=50, adjust=False).mean().iloc[-1])
     current_spy_price = float(spy_close.iloc[-1])
     
-    change = spy_close.diff()
-    gain = change.mask(change < 0, 0).ewm(com=13, adjust=False).mean()
-    loss = -change.mask(change > 0, 0).ewm(com=13, adjust=False).mean().replace(0, 0.00001)
-    current_spy_rsi = float((100 - (100 / (1 + (gain / loss)))).iloc[-1])
+    print(f"\n--- Institutional Sector Regime Matrix ---")
+    print(f"SPY Price: ${current_spy_price:.2f} | SPY EMA50: ${spy_ema50:.2f}")
     
-    print(f"\n--- Sector Regime Matrix ---")
-    print(f"SPY Price: ${current_spy_price:.2f} | SPY EMA50: ${spy_ema50:.2f} | RSI: {current_spy_rsi:.2f}")
-    
-    if current_spy_price > spy_ema50 and current_spy_rsi < 70:
-        print("Regime Status: Bullish Extension. Allocating to momentum leaders.")
-        return ranked_sectors[:2]
+    if current_spy_price > spy_ema50 and len(ranked_sectors) > 0:
+        leaders = ranked_sectors[:2]
+        print(f"Regime Status: Bullish Extension. Target allocations: {leaders}")
+        return leaders
     else:
-        print("Regime Status: Risk Management Alert. Restricting to safe-haven defensive sectors.")
-        defensive_tickers = ['XLV', 'XLP', 'XLU']
-        available_defensive = [s for s in ranked_sectors if s in defensive_tickers]
-        return available_defensive[:2] if len(available_defensive) >= 2 else ranked_sectors[:2]
+        print("Regime Status: Risk Mitigation Alert. Safely offloading capital to Cash.")
+        return []  # Empty array signals a 100% Cash pivot
 
 def run_live_rebalance():
     print("Initiating Systematic Rebalance Loop...")
-    target_tickers = calculate_sector_targets()
-    print(f"Identified Action Target Assets: {target_tickers}")
+    target_tickers = calculate_production_targets()
     
     positions = trading_client.get_all_positions()
     open_positions = {p.symbol: int(p.qty) for p in positions}
@@ -84,7 +77,7 @@ def run_live_rebalance():
     liquidated_any = False
     for symbol in list(open_positions.keys()):
         if symbol not in target_tickers:
-            print(f"Liquidating out-of-bounds sector allocation: {symbol}")
+            print(f"Liquidating asset allocation to preserve cash: {symbol}")
             trading_client.submit_order(order_data=MarketOrderRequest(symbol=symbol, qty=open_positions[symbol], side=OrderSide.SELL, time_in_force=TimeInForce.DAY))
             del open_positions[symbol]
             liquidated_any = True
@@ -92,9 +85,13 @@ def run_live_rebalance():
     if liquidated_any:
         time.sleep(15)
         
+    if not target_tickers:
+        print("Capital protection routing executed successfully. Portfolio holds 100% Cash.")
+        return
+        
     updated_account = trading_client.get_account()
     total_portfolio_equity = float(updated_account.portfolio_value)
-    target_capital_allocation = total_portfolio_equity / 2
+    target_capital_allocation = total_portfolio_equity / len(target_tickers)
     
     for ticker in target_tickers:
         if ticker in open_positions:

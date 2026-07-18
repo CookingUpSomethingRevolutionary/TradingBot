@@ -10,7 +10,7 @@ sector_tickers = {
 }
 BENCHMARK_TICKER = "SPY"
 
-FRICTION_PCT = 0.0010  
+FRICTION_PCT = 0.0010  # 10 bps transaction drag
 DRIFT_BUFFER = 0.05    
 
 print("Fetching historical data from maximum sector inception boundaries (Dec 1998)...")
@@ -25,21 +25,12 @@ df_spy = yf.download(BENCHMARK_TICKER, start="1998-12-16", interval="1d", progre
 if isinstance(df_spy.columns, pd.MultiIndex):
     df_spy.columns = df_spy.columns.droplevel(1)
 
-# Compile master dataframe without dropping rows due to missing new assets
+# Compile master dataframe
 df_universe = pd.DataFrame(raw_data)
 df_universe['US_Stocks'] = df_spy['Close']
-
-# Only drop rows where the core benchmark index data is missing
 df_universe = df_universe.dropna(subset=['US_Stocks'])
 
-# Pre-calculate Benchmark Macro Trend Indicators (50 EMA & RSI)
-change = df_universe['US_Stocks'].diff()
-gain = change.mask(change < 0, 0)
-loss = -change.mask(change > 0, 0)
-avg_gain = gain.ewm(com=13, adjust=False).mean()
-avg_loss = loss.ewm(com=13, adjust=False).mean()
-rs = avg_gain / avg_loss
-df_universe['SPY_RSI'] = 100 - (100 / (1 + rs))
+# Macro Trend Filters
 df_universe['SPY_EMA50'] = df_universe['US_Stocks'].ewm(span=50, adjust=False).mean()
 
 lookback_period = 252  
@@ -47,72 +38,93 @@ initial_capital = 10000
 portfolio_value = initial_capital
 bh_shares = portfolio_value / df_universe['US_Stocks'].iloc[lookback_period]
 
-current_holdings = {}  
+current_holdings = {}  # Format: {ticker: shares}
+cash_pool = portfolio_value
 equity_timeline = []
 benchmark_timeline = []
 date_timeline = []
 
-print("Running Lookahead-Bias-Free Sector Rotation Simulation...")
-last_rebalanced_week = None
+print("Running Lookahead-Bias-Free Monthly Sector Rotation...")
+last_rebalanced_month = None
 
 for idx in range(lookback_period, len(df_universe)):
     timestamp = df_universe.index[idx]
     current_row = df_universe.iloc[idx]
-    current_year_week = (timestamp.isocalendar()[0], timestamp.isocalendar()[1])
+    current_year_month = (timestamp.year, timestamp.month)
     
     spy_price = current_row['US_Stocks']
     spy_ema = current_row['SPY_EMA50']
-    spy_rsi = current_row['SPY_RSI']
     
-    total_portfolio_value = sum(shares * current_row[asset] for asset, shares in current_holdings.items()) if current_holdings else portfolio_value
+    # Calculate daily mark-to-market valuation
+    total_portfolio_value = cash_pool + sum(shares * current_row[asset] for asset, shares in current_holdings.items())
     
-    # WEEKLY EXECUTION GATE
-    if last_rebalanced_week is None or current_year_week != last_rebalanced_week:
-        last_rebalanced_week = current_year_week
+    # MONTHLY REBALANCE GATE (Slashes friction drag by 75%)
+    if last_rebalanced_month is None or current_year_month != last_rebalanced_month:
+        last_rebalanced_month = current_year_month
         lookback_row = df_universe.iloc[idx - lookback_period]
         
-        # Dynamic Active Universe Discovery: Filter for assets trading both now and 1 year ago
+        # Dynamic Active Universe Discovery
         active_sectors = []
         for sector in sector_tickers.keys():
             if pd.notna(current_row[sector]) and pd.notna(lookback_row[sector]):
                 active_sectors.append(sector)
                 
-        # Calculate momentum ranking scores for active assets only
+        # Calculate 12-Month Momentum Performance Metrics
         momentum_scores = {}
         for asset in active_sectors:
             momentum_scores[asset] = (current_row[asset] - lookback_row[asset]) / lookback_row[asset]
             
-        ranked_sectors = sorted(momentum_scores, key=momentum_scores.get, reverse=True)
+        # Absolute Filter: Assets MUST have positive returns over the lookback to be valid candidates
+        valid_candidates = [asset for asset, score in momentum_scores.items() if score > 0]
+        ranked_sectors = sorted(valid_candidates, key=momentum_scores.get, reverse=True)
         
-        # Macro Filter Rules
-        if spy_price > spy_ema and spy_rsi < 70:
-            # Bull Market Regime: Pick the top 2 sectors with the strongest structural momentum
-            target_assets = ranked_sectors[:2]
+        target_weights = {ticker: 0.0 for ticker in sector_tickers.keys()}
+        target_weights["Cash"] = 0.0
+        
+        # Macro Filter Rules: Only allocate to equities if SPY is in a healthy uptrend
+        if spy_price > spy_ema and len(ranked_sectors) > 0:
+            # Assign equal weights to top 2 momentum leaders
+            leaders = ranked_sectors[:2]
+            weight_per_asset = 1.0 / len(leaders)
+            for asset in leaders:
+                target_weights[asset] = weight_per_asset
         else:
-            # Bear/Overbought Regime: Pick defensive sectors only if they are trading and available
-            defensive_pool = ['XLV', 'XLP', 'XLU']
-            available_defensive = [s for s in ranked_sectors if s in defensive_pool]
-            target_assets = available_defensive[:2] if len(available_defensive) >= 2 else ranked_sectors[:2]
+            # Risk Mitigation: Total Capital Protection (100% Cash Allocation Floor)
+            target_weights["Cash"] = 1.0
             
-        # Execute allocation changes if targets switch
-        if set(current_holdings.keys()) != set(target_assets):
+        # Determine Trade Execution Requirements via Active Allocation Change Checks
+        current_weights = {}
+        for asset in sector_tickers.keys():
+            asset_shares = current_holdings.get(asset, 0.0)
+            current_weights[asset] = (asset_shares * current_row[asset]) / total_portfolio_value if total_portfolio_value > 0 else 0.0
+        current_weights["Cash"] = cash_pool / total_portfolio_value if total_portfolio_value > 0 else 0.0
+        
+        trigger_trade = False
+        for asset in target_weights.keys():
+            if abs(target_weights[asset] - current_weights.get(asset, 0.0)) > DRIFT_BUFFER:
+                trigger_trade = True
+                break
+                
+        if trigger_trade:
             total_friction_drag = 0
-            
-            # Formulate friction safely by avoiding 0 * NaN lookups on un-launched assets
             for asset in sector_tickers.keys():
-                current_val = current_holdings[asset] * current_row[asset] if asset in current_holdings else 0.0
-                ideal_val = total_portfolio_value * 0.50 if asset in target_assets else 0.0
-                trade_volume = abs(ideal_val - current_val)
-                total_friction_drag += trade_volume * FRICTION_PCT
+                current_val = current_holdings.get(asset, 0.0) * current_row[asset]
+                ideal_val = total_portfolio_value * target_weights.get(asset, 0.0)
+                total_friction_drag += abs(ideal_val - current_val) * FRICTION_PCT
                 
-            portfolio_value = total_portfolio_value - total_friction_drag
-            current_holdings = {}
+            # Deduct transaction friction costs from the portfolio pool
+            net_portfolio_value = total_portfolio_value - total_friction_drag
             
-            allocation_slice = portfolio_value / 2
-            for asset in target_assets:
-                current_holdings[asset] = allocation_slice / current_row[asset]
-                
-            total_portfolio_value = sum(shares * current_row[asset] for asset, shares in current_holdings.items())
+            # Clear allocations and re-deploy capital
+            current_holdings = {}
+            cash_pool = net_portfolio_value * target_weights["Cash"]
+            
+            for asset in sector_tickers.keys():
+                asset_weight = target_weights.get(asset, 0.0)
+                if asset_weight > 0:
+                    current_holdings[asset] = (net_portfolio_value * asset_weight) / current_row[asset]
+                    
+            total_portfolio_value = cash_pool + sum(shares * current_row[asset] for asset, shares in current_holdings.items())
 
     date_timeline.append(timestamp)
     equity_timeline.append(total_portfolio_value)
@@ -121,4 +133,4 @@ for idx in range(lookback_period, len(df_universe)):
 results_df = pd.DataFrame({"Strategy_Equity": equity_timeline, "Benchmark_Equity": benchmark_timeline}, index=date_timeline)
 results_df.index.name = "Date"
 results_df.to_csv("backtest_results.csv")
-print("✅ Multi-Inception Sector Backtest completed successfully with fixed math!")
+print("✅ Institutional Sector Backtest concluded successfully!")
