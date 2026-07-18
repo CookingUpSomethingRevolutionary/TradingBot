@@ -2,7 +2,6 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 
-# 1. Define the Global Macro Asset Universe
 asset_tickers = {
     "US_Stocks": "SPY",
     "Tech_Stocks": "QQQ",
@@ -14,15 +13,15 @@ asset_tickers = {
 print("Fetching historical data for asset universe...")
 raw_data = {}
 for name, ticker in asset_tickers.items():
+    # Fetch data and explicitly clean out yfinance multi-indexes
     df = yf.download(ticker, start="2004-01-01", interval="1d", progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.droplevel(1)
     raw_data[name] = df['Close']
 
-# Combine into a single master DataFrame
 df_universe = pd.DataFrame(raw_data).dropna()
 
-# Use S&P 500 (SPY) to calculate our core macro trend filter
+# Calculate S&P 500 macro filters safely
 change = df_universe['US_Stocks'].diff()
 gain = change.mask(change < 0, 0)
 loss = -change.mask(change > 0, 0)
@@ -32,33 +31,33 @@ rs = avg_gain / avg_loss
 df_universe['SPY_RSI'] = 100 - (100 / (1 + rs))
 df_universe['SPY_EMA50'] = df_universe['US_Stocks'].ewm(span=50, adjust=False).mean()
 
-# 2. Strategy Parameters
-lookback_period = 252  # 12 months of trading days to calculate momentum
+lookback_period = 252  
 initial_capital = 10000
 portfolio_value = initial_capital
 bh_shares = portfolio_value / df_universe['US_Stocks'].iloc[lookback_period]
 
-# Track current holdings: {asset_name: shares_held}
 current_holdings = {} 
-
-# Data arrays to record equity metrics for app.py visualizations
 equity_timeline = []
 benchmark_timeline = []
 date_timeline = []
 
 print("Running Dynamic Momentum Ranking Simulation (2005 - 2026)...")
 
-# Loop day-by-day starting after the first lookback year
+# Track previous execution year to avoid missing rebalances due to missing calendar days
+last_rebalanced_year = None
+
 for idx in range(lookback_period, len(df_universe)):
     timestamp = df_universe.index[idx]
     current_row = df_universe.iloc[idx]
+    current_year = timestamp.year
     
     spy_price = current_row['US_Stocks']
     spy_ema = current_row['SPY_EMA50']
     spy_rsi = current_row['SPY_RSI']
     
-    # REBALANCING RULE: Re-rank on the first trading day of every year
-    if timestamp.strftime('%m-%d') == df_universe.index[df_universe.index.year == timestamp.year][0].strftime('%m-%d') or idx == lookback_period:
+    # REBALANCING TRIGGER: Runs on structural year change or the absolute first step
+    if last_rebalanced_year is None or current_year != last_rebalanced_year:
+        last_rebalanced_year = current_year
         lookback_row = df_universe.iloc[idx - lookback_period]
         momentum_scores = {}
         
@@ -96,7 +95,6 @@ for idx in range(lookback_period, len(df_universe)):
     equity_timeline.append(daily_portfolio_value)
     benchmark_timeline.append(daily_bh_value)
 
-# Export calculated vectors into a static analytics manifest
 results_df = pd.DataFrame({
     "Strategy_Equity": equity_timeline,
     "Benchmark_Equity": benchmark_timeline

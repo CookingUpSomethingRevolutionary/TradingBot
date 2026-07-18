@@ -4,7 +4,6 @@ import time
 import sys
 import os
 
-# Modern alpaca-py structural imports
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
@@ -12,9 +11,6 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
-# ==========================================
-# 1. AUTHENTICATION & INITIALIZATION
-# ==========================================
 API_KEY = os.getenv("ALPACA_API_KEY")
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 
@@ -38,14 +34,10 @@ asset_universe = {
     "Real_Estate": "VNQ"
 }
 
-# ==========================================
-# 2. CORE SYSTEM LOGIC ENGINE
-# ==========================================
 def calculate_dynamic_targets():
     print("Fetching active historical trend matrices via alpaca-py...")
     momentum_scores = {}
     spy_data = None
-    
     start_date = pd.Timestamp.now() - pd.DateOffset(months=15)
     
     for name, ticker in asset_universe.items():
@@ -54,7 +46,6 @@ def calculate_dynamic_targets():
             timeframe=TimeFrame.Day,
             start=start_date
         )
-        
         bars_df = data_client.get_stock_bars(request_params).df
         
         if bars_df.empty:
@@ -72,12 +63,9 @@ def calculate_dynamic_targets():
             
         start_price = float(df_ticker['close'].iloc[-252])
         end_price = float(df_ticker['close'].iloc[-1])
-        
-        # FIX: Track scores directly by their string names ("Gold", "US_Stocks") to match structural logic
-        momentum_scores[name] = (end_price - start_price) / start_price
+        momentum_scores[ticker] = (end_price - start_price) / start_price
     
     ranked_assets = sorted(momentum_scores, key=momentum_scores.get, reverse=True)
-    
     spy_close = spy_data['close']
     spy_ema50 = float(spy_close.ewm(span=50, adjust=False).mean().iloc[-1])
     current_spy_price = float(spy_close.iloc[-1])
@@ -98,14 +86,10 @@ def calculate_dynamic_targets():
         return [asset_universe[name] for name in ranked_assets[:2]]
     else:
         print("Regime Status: Volatile Risk-Off Warning. Executing safety allocation rules.")
-        # FIX: "Gold", "Bonds", and "Real_Estate" match the ranked_assets tracking strings perfectly now
         safe_pool = [a for a in ranked_assets if a in ['Gold', 'Bonds', 'Real_Estate']]
         selected = safe_pool[:2] if len(safe_pool) >= 2 else ranked_assets[:2]
         return [asset_universe[name] for name in selected]
 
-# ==========================================
-# 3. PRODUCTION BALANCER EXECUTION
-# ==========================================
 def run_live_rebalance():
     print("Initiating Systematic Rebalance Loop...")
     target_tickers = calculate_dynamic_targets()
@@ -114,10 +98,10 @@ def run_live_rebalance():
     positions = trading_client.get_all_positions()
     open_positions = {p.symbol: int(p.qty) for p in positions}
     
+    liquidated_any = False
     for symbol in list(open_positions.keys()):
         if symbol not in target_tickers:
             print(f"Liquidating out-of-bounds asset: {symbol}")
-            
             market_order_data = MarketOrderRequest(
                 symbol=symbol,
                 qty=open_positions[symbol],
@@ -126,11 +110,14 @@ def run_live_rebalance():
             )
             trading_client.submit_order(order_data=market_order_data)
             del open_positions[symbol]
+            liquidated_any = True
             
-    if not open_positions:
-        print("Waiting for settlement clearing cycles...")
-        time.sleep(10)
+    # Hard safety delay: Give cash balances time to refresh and resolve inside Alpaca
+    if liquidated_any:
+        print("Liquidation orders submitted. Pausing 15s for settlement synchronization...")
+        time.sleep(15)
         
+    # Query a perfectly fresh, non-cached account payload for updated buying power metrics
     updated_account = trading_client.get_account()
     total_portfolio_equity = float(updated_account.portfolio_value)
     target_capital_allocation = total_portfolio_equity / 2
@@ -150,14 +137,21 @@ def run_live_rebalance():
         
         if target_shares_qty > 0:
             print(f"Routing Production Market BUY Order: {target_shares_qty} shares of {ticker}")
-            
             market_order_data = MarketOrderRequest(
                 symbol=ticker,
                 qty=target_shares_qty,
                 side=OrderSide.BUY,
                 time_in_force=TimeInForce.DAY
             )
-            trading_client.submit_order(order_data=market_order_data)
+            try:
+                trading_client.submit_order(order_data=market_order_data)
+            except Exception as order_err:
+                print(f"⚠️ Order Failed for {ticker}: {order_err}. Retrying with 95% allocation allowance.")
+                # Fallback safeguard in case of minor premium shifts or lack of cash clearance
+                adjusted_qty = int((target_capital_allocation * 0.95) // asset_price)
+                if adjusted_qty > 0:
+                    market_order_data.qty = adjusted_qty
+                    trading_client.submit_order(order_data=market_order_data)
             
     print("\nSystem Rebalance Successfully Completed.")
 

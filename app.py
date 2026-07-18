@@ -1,9 +1,14 @@
 import streamlit as st
-import alpaca_trade_api as tradeapi
 import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
 import os
+
+# Modern alpaca-py structural imports
+from alpaca.trading.client import TradingClient
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame
 
 # ==========================================
 # PAGE SETUP & STYLING
@@ -33,7 +38,6 @@ asset_universe = {
 with tab1:
     API_KEY = st.secrets.get("ALPACA_API_KEY") or os.getenv("ALPACA_API_KEY")
     SECRET_KEY = st.secrets.get("ALPACA_SECRET_KEY") or os.getenv("ALPACA_SECRET_KEY")
-    BASE_URL = "https://paper-api.alpaca.markets"
 
     if not API_KEY or not SECRET_KEY:
         st.warning("🔒 **Running in Preview Mode:** Connect your Alpaca secrets to unlock live account telemetry.")
@@ -43,8 +47,10 @@ with tab1:
         col3.metric("API Gateway", "Disengaged")
     else:
         try:
-            api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL, api_version='v2')
-            account = api.get_account()
+            # Modern official clients
+            trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
+            data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
+            account = trading_client.get_account()
             
             # Account summary metrics
             col1, col2, col3, col4 = st.columns(4)
@@ -64,29 +70,36 @@ with tab1:
             def run_live_indicators():
                 try:
                     momentum_scores = {}
+                    start_date = pd.Timestamp.now() - pd.DateOffset(months=15)
                     
-                    # Create a definitive 15-month calendar lookback window 
-                    # to safely fetch enough historical data points
-                    start_date = (pd.Timestamp.now() - pd.DateOffset(months=15)).strftime('%Y-%m-%d')
+                    # Fetching all tickers at once safely using alpaca-py
+                    tickers = list(asset_universe.values())
+                    request_params = StockBarsRequest(
+                        symbol_or_symbols=tickers,
+                        timeframe=TimeFrame.Day,
+                        start=start_date
+                    )
                     
-                    # 1. Fetch SPY with the explicit 'iex' feed restriction applied
-                    spy_bars = api.get_bars("SPY", tradeapi.rest.TimeFrame.Day, start=start_date, feed='iex').df
-                    if spy_bars.empty: 
-                        st.error("❌ Alpaca returned an empty dataset for SPY. Ensure your keys are correct and active.")
+                    bars_response = data_client.get_stock_bars(request_params)
+                    bars_df = bars_response.df
+                    
+                    if bars_df.empty:
+                        st.error("❌ Alpaca returned an empty dataset. Check your keys and data subscription.")
                         return None
                     
-                    if isinstance(spy_bars.columns, pd.MultiIndex):
-                        spy_bars.columns = spy_bars.columns.droplevel(1)
+                    # Handle MultiIndex and extract SPY cleanly
+                    spy_bars = bars_df.xs("SPY", level=0) if "SPY" in bars_df.index.levels[0] else bars_df
+                    if spy_bars.empty: 
+                        st.error("❌ SPY data missing from payload.")
+                        return None
                     
-                    # 2. Loop and fetch trailing universe momentum with the 'iex' feed
+                    # Loop and fetch trailing universe momentum safely
                     for name, ticker in asset_universe.items():
                         try:
-                            b = api.get_bars(ticker, tradeapi.rest.TimeFrame.Day, start=start_date, feed='iex').df
+                            b = bars_df.xs(ticker, level=0) if ticker in bars_df.index.levels[0] else bars_df
                             if b.empty:
                                 st.warning(f"⚠️ Empty data received for {ticker}")
                                 continue
-                            if isinstance(b.columns, pd.MultiIndex):
-                                b.columns = b.columns.droplevel(1)
                                 
                             if len(b) >= 252:
                                 start_val = float(b['close'].iloc[-252])
@@ -101,7 +114,7 @@ with tab1:
                         st.error("❌ Momentum scores matrix is entirely empty.")
                         return None
 
-                    # 3. Calculate Macro Trend Filters
+                    # Calculate Macro Trend Filters
                     spy_close = spy_bars['close']
                     spy_ema50 = spy_close.ewm(span=50, adjust=False).mean()
                     
@@ -154,7 +167,7 @@ with tab1:
                 
             st.markdown("---")
             st.subheader("📦 Currently Deployed Positions")
-            live_pos = api.list_positions()
+            live_pos = trading_client.get_all_positions()
             if live_pos:
                 p_records = []
                 for p in live_pos:
@@ -174,7 +187,7 @@ with tab1:
             st.error(f"Engine connection processing error: {e}")
 
 # ==========================================
-# TAB 2: HISTORICAL BACKTEST ENGINE (LIVE PARSING)
+# TAB 2: HISTORICAL BACKTEST ENGINE
 # ==========================================
 with tab2:
     st.subheader("⏳ Mathematical Backtest Analytics (Parsed Verification)")
@@ -183,7 +196,6 @@ with tab2:
     if not os.path.exists(csv_file):
         st.info("ℹ️ **Backtest Data File Missing:** Please run `python backtest.py` locally in your workspace terminal first to compile the underlying validation CSV matrix.")
     else:
-        # Read the exact mathematical numbers generated by your script
         backtest_df = pd.read_csv(csv_file, parse_dates=["Date"], index_col="Date")
         
         strat_final = backtest_df["Strategy_Equity"].iloc[-1]
@@ -193,13 +205,11 @@ with tab2:
         bench_return = ((bench_final - 10000) / 10000) * 100
         alpha_excess = strat_return - bench_return
         
-        # Performance Indicators Rows
         b_col1, b_col2, b_col3 = st.columns(3)
         b_col1.metric("Strategy Portfolio Value", f"${strat_final:,.2f}", f"{strat_return:+.2f}% Total Return")
         b_col2.metric("S&P 500 Benchmark Value", f"${bench_final:,.2f}", f"{bench_return:+.2f}% Total Return")
         b_col3.metric("System Alpha Multiplier", f"{alpha_excess:+.2f}%", "Excess Market Capture", delta_color="normal")
         
-        # Interactive Performance Chart
         st.markdown("### 📈 Strategic Growth Allocation Profiles")
         fig_hist = go.Figure()
         fig_hist.add_trace(go.Scatter(x=backtest_df.index, y=backtest_df['Strategy_Equity'], name="Dynamic Momentum Strategy Portfolio", line=dict(color="#FFB900", width=3)))
@@ -215,14 +225,11 @@ with tab2:
         )
         st.plotly_chart(fig_hist, use_container_width=True)
         
-        # Added bonus: Generate explicit statistical performance rows
         st.markdown("### 📋 Mathematical Integrity Performance Table")
         
-        # Calculate trailing metrics
         strat_pcts = backtest_df["Strategy_Equity"].pct_change().dropna()
         bench_pcts = backtest_df["Benchmark_Equity"].pct_change().dropna()
         
-        # Annualized Sharpe Matrix calculation (Assuming Risk-Free Rate = 0 for pure baseline mapping)
         strat_sharpe = (strat_pcts.mean() / strat_pcts.std()) * np.sqrt(252) if strat_pcts.std() != 0 else 0
         bench_sharpe = (bench_pcts.mean() / bench_pcts.std()) * np.sqrt(252) if bench_pcts.std() != 0 else 0
         
