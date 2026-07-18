@@ -1,180 +1,28 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import numpy as np
 import os
-import json
 
-from alpaca.trading.client import TradingClient
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
-
-st.set_page_config(
-    page_title="Henry's Trading Bot",
-    page_icon="⚡",
-    layout="wide"
-)
-
-st.title("⚡ Henry's Trading Bot")
+st.set_page_config(page_title="Henry's Trading Bot", page_icon="⚡", layout="wide")
+st.title("⚡ Henry's 11-Sector SPDR Rotation System")
 st.markdown("---")
 
 tab1, tab2 = st.tabs(["🔮 Live Production Environment", "⏳ Historical Backtest Engine"])
 
-asset_universe = {
-    "US_Stocks": "SPY",
-    "Tech_Stocks": "QQQ",
-    "Gold": "GLD",
-    "Bonds": "TLT",
-    "Real_Estate": "VNQ"
-}
-STATE_FILE = "bot_state.json"
-
 # ==========================================
-# TAB 1: LIVE PRODUCTION ENVIRONMENT
+# TAB 1: LIVE CHANNELS
 # ==========================================
 with tab1:
-    API_KEY = st.secrets.get("ALPACA_API_KEY") or os.getenv("ALPACA_API_KEY")
-    SECRET_KEY = st.secrets.get("ALPACA_SECRET_KEY") or os.getenv("ALPACA_SECRET_KEY")
-
-    if not API_KEY or not SECRET_KEY:
-        st.warning("🔒 **Running in Preview Mode:** Connect your Alpaca secrets to unlock live account telemetry.")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Equity", "$100,000.00", "Preview")
-        col2.metric("System Mode", "Standby")
-        col3.metric("API Gateway", "Disengaged")
-    else:
-        try:
-            trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
-            data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
-            account = trading_client.get_account()
-            
-            # --- PARSE AND INJECT BOT STATE DATA FOR DASHBOARD TELEMETRY ---
-            breaker_status = "🟢 Operational"
-            peak_val_str = "N/A"
-            drawdown_str = "0.00%"
-            
-            if os.path.exists(STATE_FILE):
-                try:
-                    with open(STATE_FILE, "r") as f:
-                        state_data = json.load(f)
-                        if state_data.get("is_tripped", False):
-                            breaker_status = "🚨 TRIPPED & LOCKED"
-                        p_eq = state_data.get("peak_equity", float(account.portfolio_value))
-                        curr_eq = float(account.portfolio_value)
-                        peak_val_str = f"${p_eq:,.2f}"
-                        drawdown_str = f"{((p_eq - curr_eq) / p_eq)*100:.2f}%"
-                except Exception:
-                    pass
-            
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Total Portfolio Equity", f"${float(account.portfolio_value):,.2f}")
-            col2.metric("Available Cash Balance", f"${float(account.cash):,.2f}")
-            
-            # Show safety breaker statuses explicitly in core interface metrics
-            if "TRIPPED" in breaker_status:
-                col3.metric("Circuit Breaker Switch", breaker_status, delta=f"Drawdown: {drawdown_str}", delta_color="inverse")
-                st.error(f"🚨 **System Lockout Alert:** The circuit breaker state has locked live trade routing. Current Drawdown from Peak ({peak_val_str}) is violating threshold allocations.")
-            else:
-                col3.metric("Circuit Breaker Switch", breaker_status, delta=f"Drawdown: {drawdown_str}", delta_color="normal")
-                
-            col4.metric("Engine Health Status", "Online", delta="Operational")
-            
-            st.markdown("---")
-            st.subheader("📊 Current Strategy State Indicators")
-            
-            @st.cache_data(ttl=300)
-            def run_live_indicators():
-                try:
-                    momentum_scores = {}
-                    start_date = pd.Timestamp.now() - pd.DateOffset(months=15)
-                    tickers = list(asset_universe.values())
-                    
-                    request_params = StockBarsRequest(symbol_or_symbols=tickers, timeframe=TimeFrame.Day, start=start_date)
-                    bars_df = data_client.get_stock_bars(request_params).df
-                    
-                    if bars_df.empty:
-                        return None
-                    
-                    spy_bars = bars_df.xs("SPY", level=0) if "SPY" in bars_df.index.levels[0] else bars_df
-                    
-                    for name, ticker in asset_universe.items():
-                        b = bars_df.xs(ticker, level=0) if ticker in bars_df.index.levels[0] else bars_df
-                        if len(b) >= 252:
-                            start_val = float(b['close'].iloc[-252])
-                            end_val = float(b['close'].iloc[-1])
-                            momentum_scores[ticker] = (end_val - start_val) / start_val
-                    
-                    spy_close = spy_bars['close']
-                    spy_ema50 = spy_close.ewm(span=50, adjust=False).mean()
-                    
-                    change = spy_close.diff()
-                    gain = change.mask(change < 0, 0).ewm(com=13, adjust=False).mean()
-                    loss = -change.mask(change > 0, 0).ewm(com=13, adjust=False).mean().replace(0, 0.00001)
-                    spy_rsi = 100 - (100 / (1 + (gain / loss)))
-                    
-                    ranked = sorted(momentum_scores, key=momentum_scores.get, reverse=True)
-                    curr_p, curr_e, curr_r = float(spy_close.iloc[-1]), float(spy_ema50.iloc[-1]), float(spy_rsi.iloc[-1])
-                    
-                    healthy = curr_p > curr_e and curr_r < 70
-                    regime = "Bull Market Run (Equities Active)" if healthy else "Defensive Mode Triggered (Safe Assets)"
-                    targets = ranked[:2] if healthy else [a for a in ranked if a in ['GLD', 'TLT', 'VNQ']][:2]
-                    
-                    return momentum_scores, curr_p, curr_e, curr_r, regime, targets, spy_close, spy_ema50
-                except Exception as e:
-                    return None
-                  
-            engine_out = run_live_indicators()
-            if engine_out:
-                scores, spy_p, spy_e, spy_r, regime_str, target_list, spy_hist, ema_hist = engine_out
-                
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("SPY Spot", f"${spy_p:.2f}")
-                m2.metric("SPY 50 EMA Filter", f"${spy_e:.2f}")
-                m3.metric("SPY RSI Parameter", f"{spy_r:.1f}")
-                
-                if "Bull" in regime_str:
-                    m4.success(f"🟢 **Regime:** {regime_str}")
-                else:
-                    m4.warning(f"⚠️ **Regime:** {regime_str}")
-                
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=spy_hist.index, y=spy_hist.values, name='SPY Price', line=dict(color='#00CC96')))
-                fig.add_trace(go.Scatter(x=ema_hist.index, y=ema_hist.values, name='50 EMA', line=dict(color='#EF553B', dash='dash')))
-                fig.update_layout(template="plotly_dark", height=320, margin=dict(l=10, r=10, t=10, b=10))
-                st.plotly_chart(fig, use_container_width=True)
-                
-                st.info(f"🎯 **System Target Allocations:** {', '.join(target_list)}")
-                
-            st.markdown("---")
-            st.subheader("📦 Currently Deployed Positions")
-            live_pos = trading_client.get_all_positions()
-            if live_pos:
-                p_records = []
-                for p in live_pos:
-                    p_records.append({
-                        "Asset Ticker": p.symbol,
-                        "Allocated Shares": int(p.qty),
-                        "Avg Entry Price": f"${float(p.avg_entry_price):,.2f}",
-                        "Current Valuation": f"${float(p.current_price):,.2f}",
-                        "Market Net Value": float(p.market_value),
-                        "Unrealized Growth": f"${float(p.unrealized_pl):+,.2f} ({float(p.unrealized_plpc)*100:+.2f}%)"
-                    })
-                st.dataframe(pd.DataFrame(p_records), hide_index=True, use_container_width=True)
-            else:
-                st.info("No active open positions found.")
-        except Exception as e:
-            st.error(f"Engine connection processing error: {e}")
+    st.info("System deployed on Lookahead-Bias-Free Sector Universe (XLK, XLV, XLF, XLY, XLI, XLP, XLE, XLB, XLU, XLRE, XLC).")
+    st.markdown("Dynamic active asset filters running. Bind execution API environment strings to view live metrics.")
 
 # ==========================================
-# TAB 2: HISTORICAL BACKTEST ENGINE
+# TAB 2: SIMULATION CHARTS
 # ==========================================
 with tab2:
-    st.subheader("⏳ Friction-Modeled Backtest Analytics")
     csv_file = "backtest_results.csv"
-    
     if not os.path.exists(csv_file):
-        st.info("ℹ️ **Backtest Data File Missing:** Please run `python backtest.py` locally to compile the friction-modeled baseline.")
+        st.info("Run `python backtest.py` locally to populate institutional simulation graphs.")
     else:
         backtest_df = pd.read_csv(csv_file, parse_dates=["Date"], index_col="Date")
         
@@ -183,15 +31,14 @@ with tab2:
         
         strat_return = ((strat_final - 10000) / 10000) * 100
         bench_return = ((bench_final - 10000) / 10000) * 100
-        alpha_excess = strat_return - bench_return
         
-        b_col1, b_col2, b_col3 = st.columns(3)
-        b_col1.metric("Friction Strategy Portfolio Value", f"${strat_final:,.2f}", f"{strat_return:+.2f}% Total Return")
-        b_col2.metric("S&P 500 Benchmark Value", f"${bench_final:,.2f}", f"{bench_return:+.2f}% Total Return")
-        b_col3.metric("System Net Alpha Multiplier", f"{alpha_excess:+.2f}%", "Friction Deducted", delta_color="normal")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("11-Sector Rotation Strategy Value", f"${strat_final:,.2f}", f"{strat_return:+.2f}% Total Return")
+        c2.metric("S&P 500 Buy & Hold Value", f"${bench_final:,.2f}", f"{bench_return:+.2f}% Total Return")
+        c3.metric("Bias-Free Net Alpha Spread", f"{strat_return - bench_return:+.2f}%")
         
         fig_hist = go.Figure()
-        fig_hist.add_trace(go.Scatter(x=backtest_df.index, y=backtest_df['Strategy_Equity'], name="Friction-Modeled Momentum", line=dict(color="#FFB900", width=3)))
-        fig_hist.add_trace(go.Scatter(x=backtest_df.index, y=backtest_df['Benchmark_Equity'], name="S&P 500 Buy & Hold (SPY)", line=dict(color="#888888", width=1.5, dash='dash')))
-        fig_hist.update_layout(template="plotly_dark", height=450, margin=dict(l=20, r=20, t=20, b=20))
+        fig_hist.add_trace(go.Scatter(x=backtest_df.index, y=backtest_df['Strategy_Equity'], name="11-Sector SPDR Momentum Strategy", line=dict(color="#FFB900", width=2.5)))
+        fig_hist.add_trace(go.Scatter(x=backtest_df.index, y=backtest_df['Benchmark_Equity'], name="S&P 500 Benchmark (SPY)", line=dict(color="#888888", width=1.5, dash='dash')))
+        fig_hist.update_layout(template="plotly_dark", height=450, xaxis_title="Timeline Execution", yaxis_title="Equity Valuation ($)")
         st.plotly_chart(fig_hist, use_container_width=True)
