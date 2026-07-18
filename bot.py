@@ -15,7 +15,7 @@ API_KEY = os.getenv("ALPACA_API_KEY")
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 
 if not API_KEY or not SECRET_KEY:
-    print("CRITICAL ERROR: Keys missing.")
+    print("CRITICAL ERROR: Alpaca API keys are missing!")
     sys.exit(1)
 
 try:
@@ -25,7 +25,7 @@ except Exception as e:
     print(f"Auth Error: {e}")
     sys.exit(1)
 
-# Active live deployment targets (all 11 sectors are active today)
+# Active live deployment targets (All 11 Sectors)
 sector_universe = {
     "XLK": "XLK", "XLV": "XLV", "XLF": "XLF", "XLY": "XLY", 
     "XLI": "XLI", "XLP": "XLP", "XLE": "XLE", "XLB": "XLB", 
@@ -36,7 +36,6 @@ BENCHMARK_TICKER = "SPY"
 def calculate_sector_targets():
     print("Scanning Sector Momentum Matrices across 11 Asset Channels...")
     momentum_scores = {}
-    spy_data = None
     start_date = pd.Timestamp.now() - pd.DateOffset(months=15)
     
     all_tickers = list(sector_universe.values()) + [BENCHMARK_TICKER]
@@ -116,4 +115,7 @@ def run_live_rebalance():
                     trading_client.submit_order(order_data=MarketOrderRequest(symbol=ticker, qty=adjusted_qty, side=OrderSide.BUY, time_in_force=TimeInForce.DAY))
 
 if __name__ == "__main__":
-    if trading_client.get_clock().is_open: run_live_rebalance()
+    if trading_client.get_clock().is_open:
+        run_live_rebalance()
+    else:
+        print("Execution Halted: The stock market is currently closed.")

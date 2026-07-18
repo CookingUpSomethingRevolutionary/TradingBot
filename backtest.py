@@ -2,7 +2,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 
-# Updated to the 11 official Select Sector SPDR ETFs
+# 11 Official Select Sector SPDR ETFs
 sector_tickers = {
     "XLK": "XLK", "XLV": "XLV", "XLF": "XLF", "XLY": "XLY", 
     "XLI": "XLI", "XLP": "XLP", "XLE": "XLE", "XLB": "XLB", 
@@ -25,7 +25,7 @@ df_spy = yf.download(BENCHMARK_TICKER, start="1998-12-16", interval="1d", progre
 if isinstance(df_spy.columns, pd.MultiIndex):
     df_spy.columns = df_spy.columns.droplevel(1)
 
-# Compile master data frame WITHOUT dropping rows due to missing new assets
+# Compile master dataframe without dropping rows due to missing new assets
 df_universe = pd.DataFrame(raw_data)
 df_universe['US_Stocks'] = df_spy['Close']
 
@@ -90,7 +90,7 @@ for idx in range(lookback_period, len(df_universe)):
             target_assets = ranked_sectors[:2]
         else:
             # Bear/Overbought Regime: Pick defensive sectors only if they are trading and available
-            defensive_pool = ['XLV', 'XLP', 'XLU'] # Healthcare, Staples, Utilities
+            defensive_pool = ['XLV', 'XLP', 'XLU']
             available_defensive = [s for s in ranked_sectors if s in defensive_pool]
             target_assets = available_defensive[:2] if len(available_defensive) >= 2 else ranked_sectors[:2]
             
@@ -120,5 +120,6 @@ for idx in range(lookback_period, len(df_universe)):
     benchmark_timeline.append(bh_shares * current_row['US_Stocks'])
 
 results_df = pd.DataFrame({"Strategy_Equity": equity_timeline, "Benchmark_Equity": benchmark_timeline}, index=date_timeline)
+results_df.index.name = "Date"
 results_df.to_csv("backtest_results.csv")
 print("✅ Multi-Inception Sector Backtest completed successfully!")
