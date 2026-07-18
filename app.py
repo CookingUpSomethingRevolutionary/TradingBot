@@ -4,7 +4,6 @@ import plotly.graph_objects as go
 import numpy as np
 import os
 
-# Modern alpaca-py structural imports
 from alpaca.trading.client import TradingClient
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
@@ -47,12 +46,10 @@ with tab1:
         col3.metric("API Gateway", "Disengaged")
     else:
         try:
-            # Modern official clients
             trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
             data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
             account = trading_client.get_account()
             
-            # Account summary metrics
             col1, col2, col3, col4 = st.columns(4)
             total_equity = float(account.portfolio_value)
             cash = float(account.cash)
@@ -72,7 +69,6 @@ with tab1:
                     momentum_scores = {}
                     start_date = pd.Timestamp.now() - pd.DateOffset(months=15)
                     
-                    # Fetching all tickers at once safely using alpaca-py
                     tickers = list(asset_universe.values())
                     request_params = StockBarsRequest(
                         symbol_or_symbols=tickers,
@@ -87,13 +83,11 @@ with tab1:
                         st.error("❌ Alpaca returned an empty dataset. Check your keys and data subscription.")
                         return None
                     
-                    # Handle MultiIndex and extract SPY cleanly
                     spy_bars = bars_df.xs("SPY", level=0) if "SPY" in bars_df.index.levels[0] else bars_df
                     if spy_bars.empty: 
                         st.error("❌ SPY data missing from payload.")
                         return None
                     
-                    # Loop and fetch trailing universe momentum safely
                     for name, ticker in asset_universe.items():
                         try:
                             b = bars_df.xs(ticker, level=0) if ticker in bars_df.index.levels[0] else bars_df
@@ -114,7 +108,6 @@ with tab1:
                         st.error("❌ Momentum scores matrix is entirely empty.")
                         return None
 
-                    # Calculate Macro Trend Filters
                     spy_close = spy_bars['close']
                     spy_ema50 = spy_close.ewm(span=50, adjust=False).mean()
                     
@@ -122,7 +115,7 @@ with tab1:
                     gain = change.mask(change < 0, 0).ewm(com=13, adjust=False).mean()
                     loss = -change.mask(change > 0, 0).ewm(com=13, adjust=False).mean()
                     
-                    loss = loss.replace(0, 0.00001) # Prevent divide-by-zero crashes
+                    loss = loss.replace(0, 0.00001)
                     spy_rsi = 100 - (100 / (1 + (gain / loss)))
                     
                     ranked = sorted(momentum_scores, key=momentum_scores.get, reverse=True)

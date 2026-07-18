@@ -65,6 +65,7 @@ def calculate_dynamic_targets():
         end_price = float(df_ticker['close'].iloc[-1])
         momentum_scores[ticker] = (end_price - start_price) / start_price
     
+    # FIXED: ranked_assets now tracking raw ticker names (e.g., 'QQQ') directly
     ranked_assets = sorted(momentum_scores, key=momentum_scores.get, reverse=True)
     spy_close = spy_data['close']
     spy_ema50 = float(spy_close.ewm(span=50, adjust=False).mean().iloc[-1])
@@ -81,14 +82,16 @@ def calculate_dynamic_targets():
     print(f"\n--- Market Health Report ---")
     print(f"SPY Price: ${current_spy_price:.2f} | 50 EMA: ${spy_ema50:.2f} | RSI: {current_spy_rsi:.2f}")
     
+    # FIXED: Removed improper dictionary key translations preventing KeyError crashes
     if current_spy_price > spy_ema50 and current_spy_rsi < 70:
         print("Regime Status: Healthy Market Bull Run. Selecting momentum leaders.")
-        return [asset_universe[name] for name in ranked_assets[:2]]
+        return ranked_assets[:2]
     else:
         print("Regime Status: Volatile Risk-Off Warning. Executing safety allocation rules.")
-        safe_pool = [a for a in ranked_assets if a in ['Gold', 'Bonds', 'Real_Estate']]
+        safe_tickers = ['GLD', 'TLT', 'VNQ']
+        safe_pool = [a for a in ranked_assets if a in safe_tickers]
         selected = safe_pool[:2] if len(safe_pool) >= 2 else ranked_assets[:2]
-        return [asset_universe[name] for name in selected]
+        return selected
 
 def run_live_rebalance():
     print("Initiating Systematic Rebalance Loop...")
@@ -112,12 +115,10 @@ def run_live_rebalance():
             del open_positions[symbol]
             liquidated_any = True
             
-    # Hard safety delay: Give cash balances time to refresh and resolve inside Alpaca
     if liquidated_any:
         print("Liquidation orders submitted. Pausing 15s for settlement synchronization...")
         time.sleep(15)
         
-    # Query a perfectly fresh, non-cached account payload for updated buying power metrics
     updated_account = trading_client.get_account()
     total_portfolio_equity = float(updated_account.portfolio_value)
     target_capital_allocation = total_portfolio_equity / 2
@@ -125,17 +126,15 @@ def run_live_rebalance():
     print(f"\nTotal Liquid Capital: ${total_portfolio_equity:,.2f} | Target Allocation per Asset: ${target_capital_allocation:,.2f}")
     
     for ticker in target_tickers:
-        if ticker in open_positions:
-            print(f"Asset {ticker} is already established. Skipping.")
-            continue
-            
         request_params = StockBarsRequest(symbol_or_symbols=ticker, timeframe=TimeFrame.Day, limit=1)
         latest_bars = data_client.get_stock_bars(request_params).df
         asset_price = float(latest_bars['close'].iloc[-1])
         
         target_shares_qty = int(target_capital_allocation // asset_price)
+        current_qty = open_positions.get(ticker, 0)
         
-        if target_shares_qty > 0:
+        # FIXED: Removed immediate skipping. The engine now recalculates drift and updates weights dynamically.
+        if current_qty == 0:
             print(f"Routing Production Market BUY Order: {target_shares_qty} shares of {ticker}")
             market_order_data = MarketOrderRequest(
                 symbol=ticker,
@@ -147,11 +146,30 @@ def run_live_rebalance():
                 trading_client.submit_order(order_data=market_order_data)
             except Exception as order_err:
                 print(f"⚠️ Order Failed for {ticker}: {order_err}. Retrying with 95% allocation allowance.")
-                # Fallback safeguard in case of minor premium shifts or lack of cash clearance
                 adjusted_qty = int((target_capital_allocation * 0.95) // asset_price)
                 if adjusted_qty > 0:
                     market_order_data.qty = adjusted_qty
                     trading_client.submit_order(order_data=market_order_data)
+        elif current_qty != target_shares_qty:
+            qty_delta = target_shares_qty - current_qty
+            side = OrderSide.BUY if qty_delta > 0 else OrderSide.SELL
+            print(f"Rebalancing established asset {ticker}: Adjusting allocation by {qty_delta} shares ({side.name})")
+            
+            market_order_data = MarketOrderRequest(
+                symbol=ticker,
+                qty=abs(qty_delta),
+                side=side,
+                time_in_force=TimeInForce.DAY
+            )
+            try:
+                trading_client.submit_order(order_data=market_order_data)
+            except Exception as order_err:
+                if side == OrderSide.BUY:
+                    print(f"⚠️ Rebalance Adjustment Failed for {ticker}: {order_err}. Adjusting with safety margin.")
+                    adjusted_qty = int((target_capital_allocation * 0.95) // asset_price) - current_qty
+                    if adjusted_qty > 0:
+                        market_order_data.qty = adjusted_qty
+                        trading_client.submit_order(order_data=market_order_data)
             
     print("\nSystem Rebalance Successfully Completed.")
 
