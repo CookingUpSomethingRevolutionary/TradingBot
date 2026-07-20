@@ -2,110 +2,108 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 import numpy as np
-import time
+import json
 import os
 
 BENCHMARK_TICKER = "SPY"
-INITIAL_CAPITAL = 10000
+INITIAL_CAPITAL = 10000.0
 
-print("Loading monthly survivorship-free constituent matrix...")
-try:
-    universe_map = pd.read_csv("sp500_monthly_2016_present.csv", parse_dates=["Date"], index_col="Date")
-except FileNotFoundError:
-    print("CRITICAL ERROR: sp500_monthly_2016_present.csv not found!")
-    exit(1)
+# Load optimized parameters or fallback to defaults
+if os.path.exists("best_params.json"):
+    with open("best_params.json", "r") as f:
+        PARAMS = json.load(f)
+    print("Loaded optimized parameters from best_params.json")
+else:
+    PARAMS = {
+        "ema_len": 100, "rsi_len": 14, "rsi_lower": 45, "rsi_upper": 70,
+        "cmf_len": 20, "cmf_thresh": 0.05, "sl_mult": 2.0, "tp_mult": 3.0
+    }
+    print("Using default strategy parameters...")
 
-all_historical_tickers = set()
-for tickers_str in universe_map["Tickers"].dropna():
-    for t in tickers_str.split(","):
-        all_historical_tickers.add(t.strip().replace('.', '-'))
+TICKERS = ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'META', 'AMD', 'GOOGL', 'COST', 'AVGO', 'NFLX']
+START_DATE, END_DATE = "2021-01-01", "2026-07-18"
 
-ticker_list = list(all_historical_tickers)[:50] # LIMITING TO 50 FOR SPEED. Remove `[:50]` for full S&P 500
-start_date, end_date = "2020-01-01", "2026-07-18"
-
-print("Downloading OHLCV data for technical indicators...")
-df_spy = yf.download(BENCHMARK_TICKER, start=start_date, end=end_date, interval="1d", progress=False)
+print("Downloading backtest market historical data...")
+raw_data = yf.download(TICKERS + [BENCHMARK_TICKER], start=START_DATE, end=END_DATE, progress=False)
 
 data_dict = {}
-chunk_size = 20
-for i in range(0, len(ticker_list), chunk_size):
-    chunk = ticker_list[i:i+chunk_size]
-    print(f"Downloading chunk {i//chunk_size + 1}...")
-    chunk_data = yf.download(chunk, start=start_date, end=end_date, interval="1d", progress=False)
-    
-    for ticker in chunk:
-        try:
-            if isinstance(chunk_data.columns, pd.MultiIndex):
-                single_stock = chunk_data.xs(ticker, level=1, axis=1).dropna()
-            else:
-                single_stock = chunk_data.dropna()
-                
-            if len(single_stock) > 100:
-                # Calculate Indicators using pandas_ta
-                single_stock.ta.ema(length=100, append=True) # 20-week approx
-                single_stock.ta.rsi(length=14, append=True)
-                single_stock.ta.cmf(length=20, append=True)
-                single_stock.ta.atr(length=14, append=True)
-                data_dict[ticker] = single_stock
-        except Exception:
-            pass
+for t in TICKERS:
+    df = raw_data.xs(t, level=1, axis=1).dropna().copy()
+    df['EMA'] = ta.ema(df['Close'], length=PARAMS['ema_len'])
+    df['RSI'] = ta.rsi(df['Close'], length=PARAMS['rsi_len'])
+    df['CMF'] = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=PARAMS['cmf_len'])
+    df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
+    data_dict[t] = df
 
-print("Running Daily Technical Rebalancing Loop...")
-portfolio_value = INITIAL_CAPITAL
+spy_df = raw_data.xs(BENCHMARK_TICKER, level=1, axis=1).copy()
+spy_df['SMA200'] = ta.sma(spy_df['Close'], length=200)
+
 cash = INITIAL_CAPITAL
-positions = {} # format: {ticker: {'shares': x, 'entry_price': y, 'atr_at_entry': z}}
-equity_curve = []
-dates = df_spy.index[df_spy.index >= pd.Timestamp("2021-01-01")]
+positions = {}
+dates = spy_df.index[spy_df.index >= pd.Timestamp("2022-01-01")]
+
+equity_timeline = []
+benchmark_timeline = []
+spy_initial_price = spy_df.loc[dates[0], 'Close']
 
 for date in dates:
-    # 1. Check open positions for Exits (Stop Loss / Take Profit)
-    tickers_to_remove = []
-    for ticker, pos_data in positions.items():
-        if ticker in data_dict and date in data_dict[ticker].index:
-            current_close = data_dict[ticker].loc[date, 'Close']
-            entry = pos_data['entry_price']
-            atr = pos_data['atr_at_entry']
-            
-            # Risk Rules: Stop Loss at 2x ATR, Take profit at 3x ATR
-            if current_close < (entry - 2 * atr) or current_close > (entry + 3 * atr):
-                cash += pos_data['shares'] * current_close
-                tickers_to_remove.append(ticker)
-                
-    for t in tickers_to_remove:
+    # 1. Handle Active Position Exits
+    to_remove = []
+    for t, pos in positions.items():
+        if date in data_dict[t].index:
+            curr_close = data_dict[t].loc[date, 'Close']
+            sl_price = pos['entry'] - (PARAMS['sl_mult'] * pos['atr'])
+            tp_price = pos['entry'] + (PARAMS['tp_mult'] * pos['atr'])
+
+            if curr_close < sl_price or curr_close > tp_price:
+                cash += pos['shares'] * curr_close
+                to_remove.append(t)
+    for t in to_remove:
         del positions[t]
 
-    # 2. Scan for New Entries
-    if len(positions) < 5: # Max 5 active trades
-        for ticker, df in data_dict.items():
-            if date in df.index and ticker not in positions:
-                row = df.loc[date]
-                # Technical Strategy Logic
-                if pd.notna(row['EMA_100']) and pd.notna(row['RSI_14']) and pd.notna(row['CMF_20']):
-                    is_uptrend = row['Close'] > row['EMA_100']
-                    has_volume = row['CMF_20'] > 0.05
-                    has_momentum = 50 < row['RSI_14'] < 70
-                    
-                    if is_uptrend and has_volume and has_momentum:
-                        available_cash_per_trade = cash / (5 - len(positions))
-                        shares = available_cash_per_trade // row['Close']
-                        if shares > 0:
-                            positions[ticker] = {
-                                'shares': shares,
-                                'entry_price': row['Close'],
-                                'atr_at_entry': row['ATRr_14']
-                            }
-                            cash -= shares * row['Close']
-            if len(positions) >= 5:
-                break
-                
-    # Calculate daily equity
-    daily_val = cash
-    for ticker, pos in positions.items():
-        if ticker in data_dict and date in data_dict[ticker].index:
-            daily_val += pos['shares'] * data_dict[ticker].loc[date, 'Close']
-    equity_curve.append(daily_val)
+    # 2. Check Macro Regime
+    spy_bullish = spy_df.loc[date, 'Close'] > spy_df.loc[date, 'SMA200'] if date in spy_df.index else False
 
-results_df = pd.DataFrame({"Strategy_Equity": equity_curve}, index=dates)
+    # 3. Handle Position Entries
+    if spy_bullish and len(positions) < 4:
+        for t, df in data_dict.items():
+            if date in df.index and t not in positions:
+                row = df.loc[date]
+                if pd.isna(row['EMA']) or pd.isna(row['RSI']) or pd.isna(row['CMF']):
+                    continue
+
+                if row['Close'] > row['EMA'] and row['CMF'] > PARAMS['cmf_thresh'] and PARAMS['rsi_lower'] < row['RSI'] < PARAMS['rsi_upper']:
+                    total_portfolio_val = cash + sum(
+                        p['shares'] * data_dict[tk].loc[date, 'Close']
+                        for tk, p in positions.items() if date in data_dict[tk].index
+                    )
+                    risk_capital = total_portfolio_val * 0.015  # 1.5% Risk allocation per trade
+                    risk_per_share = row['ATR'] * PARAMS['sl_mult']
+
+                    if risk_per_share > 0:
+                        shares = int(risk_capital // risk_per_share)
+                        cost = shares * row['Close']
+                        if 0 < cost <= cash:
+                            positions[t] = {'shares': shares, 'entry': row['Close'], 'atr': row['ATR']}
+                            cash -= cost
+            if len(positions) >= 4:
+                break
+
+    # Calculate Daily Valuations
+    daily_equity = cash + sum(
+        pos['shares'] * data_dict[t].loc[date, 'Close']
+        for t, pos in positions.items() if date in data_dict[t].index
+    )
+    benchmark_val = (INITIAL_CAPITAL / spy_initial_price) * spy_df.loc[date, 'Close']
+
+    equity_timeline.append(daily_equity)
+    benchmark_timeline.append(benchmark_val)
+
+results_df = pd.DataFrame({
+    "Strategy_Equity": equity_timeline,
+    "Benchmark_Equity": benchmark_timeline
+}, index=dates)
+
 results_df.index.name = "Date"
 results_df.to_csv("backtest_results.csv")
-print("✅ Technical Backtest complete!")
+print("✅ Technical Backtest Complete! Saved to backtest_results.csv")
