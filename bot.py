@@ -1,10 +1,8 @@
-import pandas as pd
-import numpy as np
-import time
-import sys
 import os
+import sys
+import pandas as pd
+import pandas_ta as ta
 import yfinance as yf
-
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
@@ -19,114 +17,80 @@ if not API_KEY or not SECRET_KEY:
     print("CRITICAL ERROR: Alpaca API keys are missing!")
     sys.exit(1)
 
-try:
-    trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
-    data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
-except Exception as e:
-    print(f"Auth Error: {e}")
-    sys.exit(1)
+trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
+data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 
-BENCHMARK_TICKER = "SPY"
+def get_technical_data(ticker):
+    df = yf.download(ticker, period="1y", interval="1d", progress=False)
+    if isinstance(df.columns, pd.MultiIndex):
+        df = df.xs(ticker, level=1, axis=1)
+    df = df.dropna()
+    if len(df) > 100:
+        df.ta.ema(length=100, append=True)
+        df.ta.rsi(length=14, append=True)
+        df.ta.cmf(length=20, append=True)
+        df.ta.atr(length=14, append=True)
+        return df.iloc[-1]
+    return None
 
-def calculate_production_targets():
-    print("Reading active stock symbols from local reference layout...")
-    try:
-        universe_map = pd.read_csv("sp500_monthly_2016_present.csv", parse_dates=["Date"], index_col="Date")
-        latest_row = universe_map.iloc[-1]
-        active_symbols = [t.strip().replace('.', '-') for t in latest_row["Tickers"].split(",")]
-    except Exception as e:
-        print(f"File Access Error: {e}. Stopping execution safely.")
-        return None
-
-    all_tickers = active_symbols + [BENCHMARK_TICKER]
-    
-    print("Downloading historical reference parameters...")
-    df = yf.download(all_tickers, period="2y", interval="1d", progress=False)
-    df_close = df['Close'] if isinstance(df.columns, pd.MultiIndex) else df
-    df_close = df_close.ffill()
-    
-    momentum_scores = {}
-    for ticker in active_symbols:
-        if ticker in df_close.columns:
-            series = df_close[ticker].dropna()
-            if len(series) >= 252:
-                start_p = float(series.iloc[-252])
-                end_p = float(series.iloc[-1])
-                if start_p > 0:
-                    momentum_scores[ticker] = (end_p - start_p) / start_p
-
-    valid_candidates = [t for t, score in momentum_scores.items() if score > 0]
-    ranked_stocks = sorted(valid_candidates, key=momentum_scores.get, reverse=True)
-    
-    spy_series = df_close[BENCHMARK_TICKER]
-    spy_sma200 = float(spy_series.rolling(window=200).mean().iloc[-1])
-    current_spy_price = float(spy_series.iloc[-1])
-    
-    print(f"\n--- S&P 500 Market Regime Framework ---")
-    print(f"SPY Spot: ${current_spy_price:.2f} | SPY 200-SMA: ${spy_sma200:.2f}")
-    
-    if current_spy_price > spy_sma200 and len(ranked_stocks) > 0:
-        leaders = ranked_stocks[:5]
-        print(f"Regime Metric: Bullish. Target Picks: {leaders}")
-        return leaders
-    else:
-        print("Regime Metric: Bearish Risk Avoidance. Moving allocations to Cash.")
-        return []
-
-def run_live_rebalance():
-    print("Initiating Rebalance Execution Loop...")
-    target_tickers = calculate_production_targets()
-    if target_tickers is None:
-        return  
-        
+def manage_open_positions():
+    print("Checking active positions for ATR Stop-Loss / Take-Profit...")
     positions = trading_client.get_all_positions()
-    open_positions = {p.symbol: int(p.qty) for p in positions}
     
-    liquidated_any = False
-    for symbol in list(open_positions.keys()):
-        if symbol not in target_tickers:
-            print(f"Selling asset: {symbol}")
-            trading_client.submit_order(
-                order_data=MarketOrderRequest(symbol=symbol, qty=open_positions[symbol], side=OrderSide.SELL, time_in_force=TimeInForce.DAY)
-            )
-            del open_positions[symbol]
-            liquidated_any = True
+    for pos in positions:
+        tech = get_technical_data(pos.symbol)
+        if tech is not None:
+            current_price = float(pos.current_price)
+            avg_entry = float(pos.avg_entry_price)
+            current_atr = tech['ATRr_14']
             
-    if liquidated_any:
-        time.sleep(15) 
-        
-    if not target_tickers:
-        print("Capital protection completed. Portfolio matching 100% cash.")
-        return
-        
-    updated_account = trading_client.get_account()
-    total_portfolio_equity = float(updated_account.portfolio_value)
-    target_capital_allocation = total_portfolio_equity / len(target_tickers)
-    
-    for ticker in target_tickers:
-        if ticker in open_positions:
-            continue  
-            
-        request_params = StockBarsRequest(symbol_or_symbols=ticker, timeframe=TimeFrame.Day, limit=1)
-        latest_bars = data_client.get_stock_bars(request_params).df
-        asset_price = float(latest_bars['close'].iloc[-1])
-        target_shares_qty = int(target_capital_allocation // asset_price)
-        
-        if target_shares_qty > 0:
-            print(f"Purchasing Asset -> Ticker: {ticker} | Shares: {target_shares_qty}")
-            try:
+            # Stop Loss: 2x ATR, Take Profit: 3x ATR
+            if current_price < (avg_entry - 2 * current_atr) or current_price > (avg_entry + 3 * current_atr):
+                print(f"Risk threshold hit for {pos.symbol}. Liquidating position.")
                 trading_client.submit_order(
-                    order_data=MarketOrderRequest(symbol=ticker, qty=target_shares_qty, side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
+                    order_data=MarketOrderRequest(symbol=pos.symbol, qty=pos.qty, side=OrderSide.SELL, time_in_force=TimeInForce.DAY)
                 )
-            except Exception:
-                adjusted_qty = int((target_capital_allocation * 0.95) // asset_price)
-                if adjusted_qty > 0:
+
+def scan_for_entries():
+    print("Scanning universe for new technical setups...")
+    # Mock watchlist for speed in live bot - replace with your CSV reading logic if desired
+    watchlist = ['AAPL', 'MSFT', 'NVDA', 'TSLA', 'AMD', 'AMZN', 'META', 'GOOGL'] 
+    
+    positions = trading_client.get_all_positions()
+    open_symbols = [p.symbol for p in positions]
+    
+    if len(open_symbols) >= 5:
+        print("Portfolio full. No new entries allowed.")
+        return
+
+    account = trading_client.get_account()
+    buying_power = float(account.buying_power)
+    allocation_per_trade = buying_power / (5 - len(open_symbols))
+    
+    for ticker in watchlist:
+        if ticker in open_symbols:
+            continue
+            
+        tech = get_technical_data(ticker)
+        if tech is not None:
+            is_uptrend = tech['Close'] > tech['EMA_100']
+            has_volume = tech['CMF_20'] > 0.05
+            has_momentum = 50 < tech['RSI_14'] < 70
+            
+            if is_uptrend and has_volume and has_momentum:
+                shares_to_buy = int(allocation_per_trade // tech['Close'])
+                if shares_to_buy > 0:
+                    print(f"Technical Setup Found! Buying {shares_to_buy} shares of {ticker}")
                     trading_client.submit_order(
-                        order_data=MarketOrderRequest(symbol=ticker, qty=adjusted_qty, side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
+                        order_data=MarketOrderRequest(symbol=ticker, qty=shares_to_buy, side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
                     )
+                    open_symbols.append(ticker)
+                    if len(open_symbols) >= 5:
+                        break
 
 if __name__ == "__main__":
     if trading_client.get_clock().is_open:
-        run_live_rebalance()
+        manage_open_positions()
+        scan_for_entries()
     else:
         print("Execution Paused: Market is closed.")
