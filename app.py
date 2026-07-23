@@ -4,6 +4,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 import numpy as np
 import os
+import requests
 import yfinance as yf
 import pandas_ta as ta
 
@@ -12,7 +13,7 @@ from alpaca.trading.requests import GetOrdersRequest
 from alpaca.trading.enums import QueryOrderStatus
 
 # Configuration & Page Setup
-INITIAL_CAPITAL = 100000.00  # Set your starting capital (e.g. $100,000 for Alpaca Paper Trading)
+INITIAL_CAPITAL = 100000.00  # Starting capital base (e.g. $100,000 for Alpaca Paper Trading)
 
 st.set_page_config(page_title="Henry's Trading Bot", page_icon="⚡", layout="wide")
 st.title("⚡ Henry's Dynamic S&P 500 Rebalancing Engine")
@@ -36,23 +37,40 @@ with tab1:
         col4.metric("Engine Health", "Standby", delta_color="off")
     else:
         try:
+            # 1. Initialize Trading Client
             trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
             account = trading_client.get_account()
             positions = trading_client.get_all_positions()
             
-            # -----------------------------------------------------
-            # Account Core Metrics & Percent Increase Calculations
-            # -----------------------------------------------------
             total_equity = float(account.portfolio_value)
             cash = float(account.cash)
             buying_power = float(account.buying_power)
-            last_equity = float(account.last_equity) # Portfolio value at yesterday's close
 
-            # 1. Today's Return Calculations
-            daily_change_dollar = total_equity - last_equity
-            daily_change_pct = (daily_change_dollar / last_equity * 100) if last_equity > 0 else 0.0
+            # -----------------------------------------------------
+            # Fetch Today's P&L Directly from Alpaca Portfolio History
+            # -----------------------------------------------------
+            try:
+                base_url = "https://paper-api.alpaca.markets"  # Use https://api.alpaca.markets for live trading
+                history_url = f"{base_url}/v2/account/portfolio/history?period=1D&timeframe=1Min"
+                headers = {
+                    "APCA-API-KEY-ID": API_KEY,
+                    "APCA-API-SECRET-KEY": SECRET_KEY
+                }
+                
+                resp = requests.get(history_url, headers=headers).json()
+                
+                # Pull the most recent intraday values from Alpaca's tracking arrays
+                daily_change_dollar = resp["profit_loss"][-1]
+                daily_change_pct = resp["profit_loss_pct"][-1] * 100
+            except Exception:
+                # Fallback calculation if portfolio history endpoint fails
+                daily_change_dollar = sum(float(p.unrealized_pl) for p in positions) if positions else 0.0
+                total_cost_basis = sum(float(p.market_value) - float(p.unrealized_pl) for p in positions) if positions else 0.0
+                daily_change_pct = (daily_change_dollar / total_cost_basis * 100) if total_cost_basis > 0 else 0.0
 
-            # 2. All-Time Return Calculations
+            # -----------------------------------------------------
+            # All-Time Return Calculation
+            # -----------------------------------------------------
             all_time_change_dollar = total_equity - INITIAL_CAPITAL
             all_time_change_pct = (all_time_change_dollar / INITIAL_CAPITAL * 100) if INITIAL_CAPITAL > 0 else 0.0
 
@@ -66,7 +84,7 @@ with tab1:
                 spy_close = float(latest_spy['Close'])
                 spy_sma = float(latest_spy['SMA200'])
                 regime_bullish = spy_close > spy_sma
-                regime_status = "Bullish 🟢" if regime_bullish else "Bearish 🔴"
+                regime_status = "Bullish 🟢 (SPY > 200 SMA)" if regime_bullish else "Bearish 🔴 (SPY < 200 SMA)"
             except Exception:
                 regime_status = "Unknown ⚠️"
 
@@ -95,7 +113,6 @@ with tab1:
                     mkt_val = float(p.market_value)
                     allocation_data.append({"Asset": p.symbol, "Value": mkt_val})
                 
-                # Add Cash balance to allocation chart
                 allocation_data.append({"Asset": "CASH", "Value": cash})
                 alloc_df = pd.DataFrame(allocation_data)
                 
