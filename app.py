@@ -11,6 +11,9 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import GetOrdersRequest
 from alpaca.trading.enums import QueryOrderStatus
 
+# Configuration & Page Setup
+INITIAL_CAPITAL = 100000.00  # Set your starting capital (e.g. $100,000 for Alpaca Paper Trading)
+
 st.set_page_config(page_title="Henry's Trading Bot", page_icon="⚡", layout="wide")
 st.title("⚡ Henry's Dynamic S&P 500 Rebalancing Engine")
 st.markdown("---")
@@ -37,13 +40,21 @@ with tab1:
             account = trading_client.get_account()
             positions = trading_client.get_all_positions()
             
-            # Account Core Metrics
+            # -----------------------------------------------------
+            # Account Core Metrics & Percent Increase Calculations
+            # -----------------------------------------------------
             total_equity = float(account.portfolio_value)
             cash = float(account.cash)
             buying_power = float(account.buying_power)
-            last_equity = float(account.last_equity)
-            daily_change = total_equity - last_equity
-            daily_change_pct = (daily_change / last_equity * 100) if last_equity > 0 else 0.0
+            last_equity = float(account.last_equity) # Portfolio value at yesterday's close
+
+            # 1. Today's Return Calculations
+            daily_change_dollar = total_equity - last_equity
+            daily_change_pct = (daily_change_dollar / last_equity * 100) if last_equity > 0 else 0.0
+
+            # 2. All-Time Return Calculations
+            all_time_change_dollar = total_equity - INITIAL_CAPITAL
+            all_time_change_pct = (all_time_change_dollar / INITIAL_CAPITAL * 100) if INITIAL_CAPITAL > 0 else 0.0
 
             # Live SPY Market Regime Check
             try:
@@ -55,18 +66,18 @@ with tab1:
                 spy_close = float(latest_spy['Close'])
                 spy_sma = float(latest_spy['SMA200'])
                 regime_bullish = spy_close > spy_sma
-                regime_status = "Bullish" if regime_bullish else "Bearish"
+                regime_status = "Bullish 🟢 (SPY > 200 SMA)" if regime_bullish else "Bearish 🔴 (SPY < 200 SMA)"
             except Exception:
-                regime_status = "Unknown"
+                regime_status = "Unknown ⚠️"
 
             # -----------------------------------------------------
-            # 1. Top Executive Metrics
+            # 1. Executive Performance Metrics Header
             # -----------------------------------------------------
             m1, m2, m3, m4, m5 = st.columns(5)
-            m1.metric("Portfolio Equity", f"${total_equity:,.2f}", f"{daily_change_pct:+.2f}% Today")
-            m2.metric("Available Cash", f"${cash:,.2f}")
-            m3.metric("Buying Power", f"${buying_power:,.2f}")
-            m4.metric("Active Holdings", f"{len(positions)} Positions")
+            m1.metric("Portfolio Equity", f"${total_equity:,.2f}")
+            m2.metric("Today's Return", f"${daily_change_dollar:+,.2f}", delta=f"{daily_change_pct:+.2f}%")
+            m3.metric("All-Time Return", f"${all_time_change_dollar:+,.2f}", delta=f"{all_time_change_pct:+.2f}%")
+            m4.metric("Available Cash", f"${cash:,.2f}")
             m5.metric("Market Regime", regime_status)
 
             st.markdown("---")
@@ -84,7 +95,7 @@ with tab1:
                     mkt_val = float(p.market_value)
                     allocation_data.append({"Asset": p.symbol, "Value": mkt_val})
                 
-                # Add Cash balance to allocation donut
+                # Add Cash balance to allocation chart
                 allocation_data.append({"Asset": "CASH", "Value": cash})
                 alloc_df = pd.DataFrame(allocation_data)
                 
@@ -96,7 +107,7 @@ with tab1:
                     color_discrete_sequence=px.colors.qualitative.Pastel
                 )
                 fig_pie.update_layout(template="plotly_dark", height=350, margin=dict(l=10, r=10, t=10, b=10))
-                st.plotly_chart(fig_pie, use_container_width=True)
+                st.plotly_chart(fig_pie, width="stretch")
 
             with col_stats:
                 st.subheader("⚡ Risk & Exposure Metrics")
@@ -105,15 +116,16 @@ with tab1:
                 exposure_pct = (long_val / total_equity * 100) if total_equity > 0 else 0.0
                 
                 st.write(f"**Account Status:** `{account.status.value.upper()}`")
+                st.write(f"**Buying Power:** `${buying_power:,.2f}`")
                 st.write(f"**Long Market Value:** `${long_val:,.2f}`")
-                st.write(f"**Cash Allocation:** `${cash:,.2f}` ({(cash / total_equity * 100):.1f}%)")
+                st.write(f"**Cash Reserve:** `${cash:,.2f}` ({(cash / total_equity * 100):.1f}%)")
                 
                 st.progress(min(int(exposure_pct), 100), text=f"Equity Exposure: {exposure_pct:.1f}%")
 
             st.markdown("---")
 
             # -----------------------------------------------------
-            # 3. Active Holdings Table
+            # 3. Active Holdings Detail Table
             # -----------------------------------------------------
             st.subheader("💼 Active Positions Detail")
             
@@ -137,7 +149,7 @@ with tab1:
                     })
                 
                 pos_df = pd.DataFrame(pos_list)
-                st.dataframe(pos_df, hide_index=True, use_container_width=True)
+                st.dataframe(pos_df, hide_index=True, width="stretch")
             else:
                 st.info("No active positions held in portfolio. Capital is currently 100% in cash.")
 
@@ -166,7 +178,7 @@ with tab1:
                         })
                     
                     order_df = pd.DataFrame(order_list)
-                    st.dataframe(order_df, hide_index=True, use_container_width=True)
+                    st.dataframe(order_df, hide_index=True, width="stretch")
                 else:
                     st.info("No recent orders recorded.")
             except Exception as order_err:
@@ -204,7 +216,7 @@ with tab2:
         fig_hist.add_trace(go.Scatter(x=backtest_df.index, y=backtest_df['Strategy_Equity'], name="Dynamic S&P 500 Top-5 Strategy", line=dict(color="#FFB900", width=3)))
         fig_hist.add_trace(go.Scatter(x=backtest_df.index, y=backtest_df['Benchmark_Equity'], name="S&P 500 Buy & Hold Benchmark (SPY)", line=dict(color="#888888", width=1.5, dash='dash')))
         fig_hist.update_layout(template="plotly_dark", height=450, margin=dict(l=20, r=20, t=20, b=20))
-        st.plotly_chart(fig_hist, use_container_width=True)
+        st.plotly_chart(fig_hist, width="stretch")
         
         st.markdown("### 📋 Mathematical Integrity Performance Table")
         strat_pcts = backtest_df["Strategy_Equity"].pct_change().dropna()
@@ -218,4 +230,4 @@ with tab2:
             "Dynamic S&P 500 Strategy": [f"$10,000.00", f"${strat_final:,.2f}", f"{strat_return:+.2f}%", f"{strat_sharpe:.2f}"],
             "S&P 500 Buy & Hold (SPY)": [f"$10,000.00", f"${bench_final:,.2f}", f"{bench_return:+.2f}%", f"{bench_sharpe:.2f}"]
         }
-        st.dataframe(pd.DataFrame(stats_data), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(stats_data), hide_index=True, width="stretch")
