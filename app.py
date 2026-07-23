@@ -55,9 +55,9 @@ with tab1:
                 spy_close = float(latest_spy['Close'])
                 spy_sma = float(latest_spy['SMA200'])
                 regime_bullish = spy_close > spy_sma
-                regime_status = "Bullish 🟢 (SPY > 200 SMA)" if regime_bullish else "Bearish 🔴 (SPY < 200 SMA)"
+                regime_status = "Bullish" if regime_bullish else "Bearish"
             except Exception:
-                regime_status = "Unknown ⚠️"
+                regime_status = "Unknown"
 
             # -----------------------------------------------------
             # 1. Top Executive Metrics
