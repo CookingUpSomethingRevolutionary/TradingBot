@@ -1,9 +1,7 @@
-pandas
-numpy
-alpaca-py
-yfinance
-plotly
 streamlit
-lxml
-html5lib
-BeautifulSoup4
+pandas
+plotly
+numpy
+yfinance
+pandas-ta
+alpaca-py
