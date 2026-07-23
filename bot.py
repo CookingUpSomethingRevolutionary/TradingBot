@@ -13,23 +13,29 @@ API_KEY = os.getenv("ALPACA_API_KEY")
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 
 if not API_KEY or not SECRET_KEY:
-    print("CRITICAL ERROR: Alpaca API keys missing from environment!")
+    print("CRITICAL ERROR: Alpaca credentials missing from environment!")
     sys.exit(1)
 
 trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
 
-# Load parameters
 if os.path.exists("best_params.json"):
     with open("best_params.json", "r") as f:
         PARAMS = json.load(f)
 else:
-    PARAMS = {
-        "ema_len": 100, "rsi_len": 14, "rsi_lower": 45, "rsi_upper": 70,
-        "cmf_len": 20, "cmf_thresh": 0.05, "sl_mult": 2.0, "tp_mult": 3.0
-    }
+    print("CRITICAL ERROR: best_params.json missing.")
+    sys.exit(1)
 
-WATCHLIST = ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'META', 'AMD', 'GOOGL', 'COST', 'AVGO', 'NFLX']
 BENCHMARK = "SPY"
+
+def get_current_universe():
+    try:
+        universe_map = pd.read_csv("sp500_monthly_2016_present.csv", parse_dates=["Date"], index_col="Date")
+        latest_row = universe_map.iloc[-1]
+        active_symbols = [t.strip().replace('.', '-') for t in latest_row["Tickers"].split(",")]
+        return active_symbols
+    except Exception as e:
+        print(f"Error loading universe matrix: {e}")
+        return []
 
 def get_indicators(symbol):
     df = yf.download(symbol, period="1y", interval="1d", progress=False)
@@ -53,7 +59,7 @@ def check_market_regime():
     return latest['Close'] > latest['SMA200']
 
 def manage_positions():
-    print("Scanning active positions for ATR Stop/Take-Profit exits...")
+    print("Checking active open positions for stop-loss and take-profit targets...")
     positions = trading_client.get_all_positions()
 
     for pos in positions:
@@ -67,35 +73,32 @@ def manage_positions():
             take_profit = avg_entry + (PARAMS['tp_mult'] * atr)
 
             if curr_p < stop_loss or curr_p > take_profit:
-                print(f"Risk rule triggered for {pos.symbol}. Liquidating position...")
+                print(f"Risk threshold hit for {pos.symbol}. Liquidating position...")
                 trading_client.submit_order(
-                    order_data=MarketOrderRequest(
-                        symbol=pos.symbol,
-                        qty=pos.qty,
-                        side=OrderSide.SELL,
-                        time_in_force=TimeInForce.DAY
-                    )
+                    order_data=MarketOrderRequest(symbol=pos.symbol, qty=pos.qty, side=OrderSide.SELL, time_in_force=TimeInForce.DAY)
                 )
 
 def scan_entries():
     if not check_market_regime():
-        print("Market Regime: SPY below 200 SMA (Bearish). Entry scans paused.")
+        print("Market Regime: SPY below 200 SMA (Bearish). Entry scans suspended.")
         return
 
     positions = trading_client.get_all_positions()
     open_symbols = [p.symbol for p in positions]
 
     if len(open_symbols) >= 4:
-        print("Portfolio fully allocated (Max 4 trades).")
+        print("Portfolio capacity reached (Max 4 concurrent holdings).")
         return
 
     account = trading_client.get_account()
     portfolio_equity = float(account.portfolio_value)
     cash_available = float(account.cash)
+    risk_budget = portfolio_equity * 0.015 
 
-    risk_budget = portfolio_equity * 0.015  # 1.5% Risk Sizing
+    watchlist = get_current_universe()
+    print(f"Scanning {len(watchlist)} current index constituents...")
 
-    for ticker in WATCHLIST:
+    for ticker in watchlist:
         if ticker in open_symbols:
             continue
 
@@ -111,14 +114,9 @@ def scan_entries():
                 cost = shares_to_buy * tech['Close']
 
                 if shares_to_buy > 0 and cost <= cash_available:
-                    print(f"BUY SIGNAL IDENTIFIED -> Ticker: {ticker} | Shares: {shares_to_buy}")
+                    print(f"TECHNICAL ENTRY SIGNAL -> Symbol: {ticker} | Quantity: {shares_to_buy}")
                     trading_client.submit_order(
-                        order_data=MarketOrderRequest(
-                            symbol=ticker,
-                            qty=shares_to_buy,
-                            side=OrderSide.BUY,
-                            time_in_force=TimeInForce.DAY
-                        )
+                        order_data=MarketOrderRequest(symbol=ticker, qty=shares_to_buy, side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
                     )
                     open_symbols.append(ticker)
                     if len(open_symbols) >= 4:
@@ -129,4 +127,4 @@ if __name__ == "__main__":
         manage_positions()
         scan_entries()
     else:
-        print("Market is closed. Bot standing by.")
+        print("Market closed. Execution paused.")
