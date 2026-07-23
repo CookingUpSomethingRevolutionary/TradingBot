@@ -3,5 +3,5 @@ pandas
 plotly
 numpy
 yfinance
-pandas-ta==0.3.14b0
+pandas-ta
 alpaca-py
